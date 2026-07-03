@@ -1,7 +1,7 @@
-"""Privacy cleaner for macmon — remove activity traces."""
+"""Privacy cleaner for macmon -- remove activity traces."""
 
-import os
 import shutil
+import sqlite3
 from pathlib import Path
 
 from rich.panel import Panel
@@ -77,9 +77,6 @@ def _scan_all_traces() -> list[dict]:
     # Zsh sessions
     traces.append(_check_zsh_sessions())
 
-    # Spotlight search history
-    traces.append(_check_spotlight())
-
     # SSH known_hosts
     traces.append(_check_ssh())
 
@@ -89,10 +86,36 @@ def _scan_all_traces() -> list[dict]:
     return traces
 
 
+# Modern macOS (10.13+) stores recents as sharedfilelist files
+_SFL_DIR = Path.home() / "Library/Application Support/com.apple.sharedfilelist"
+_RECENT_SFL_PREFIXES = (
+    "com.apple.LSSharedFileList.RecentDocuments",
+    "com.apple.LSSharedFileList.RecentApplications",
+    "com.apple.LSSharedFileList.RecentHosts",
+    "com.apple.LSSharedFileList.RecentServers",
+)
+
+
+def _recent_sfl_files() -> list[Path]:
+    if not _SFL_DIR.exists():
+        return []
+    try:
+        return [
+            f for f in _SFL_DIR.iterdir()
+            if f.is_file() and f.name.startswith(_RECENT_SFL_PREFIXES) and f.suffix in (".sfl2", ".sfl3")
+        ]
+    except (OSError, PermissionError):
+        return []
+
+
 def _check_recent_items() -> dict:
-    out, _, rc = run_cmd(["defaults", "read", "com.apple.recentitems"], timeout=5)
-    found = rc == 0 and len(out.strip()) > 10
-    return {"name": "Recent Items (macOS)", "detail": "Documents, apps, servers", "size": 0, "found": found, "action": "clear_recent"}
+    files = _recent_sfl_files()
+    size = 0
+    for f in files:
+        st = safe_stat(f)
+        if st:
+            size += st.st_size
+    return {"name": "Recent Items (macOS)", "detail": f"{len(files)} sharedfilelist files", "size": size, "found": bool(files), "action": "clear_recent"}
 
 
 def _check_finder_recent() -> dict:
@@ -116,12 +139,19 @@ def _check_quarantine() -> dict:
     db_path = Path.home() / "Library/Preferences/com.apple.LaunchServices.QuarantineEventsV2"
     size = 0
     found = False
+    count = 0
     if db_path.exists():
         st = safe_stat(db_path)
         if st:
             size = st.st_size
-            found = size > 1024  # Meaningful entries exist
-    return {"name": "Quarantine Events DB", "detail": "Download tracking", "size": size, "found": found, "action": "clear_quarantine"}
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            count = conn.execute("SELECT COUNT(*) FROM LSQuarantineEvent").fetchone()[0]
+            conn.close()
+            found = count > 0
+        except sqlite3.Error:
+            found = size > 1024
+    return {"name": "Quarantine Events DB", "detail": f"{count} download events", "size": size, "found": found, "action": "clear_quarantine"}
 
 
 def _check_shell_history() -> list[dict]:
@@ -174,12 +204,6 @@ def _check_zsh_sessions() -> dict:
     return {"name": "Zsh Sessions", "detail": "Session restore files", "size": size, "found": size > 0, "action": "clear_dir", "path": str(sessions)}
 
 
-def _check_spotlight() -> dict:
-    out, _, rc = run_cmd(["defaults", "read", "com.apple.spotlight"], timeout=5)
-    found = rc == 0 and "orderedItems" in out
-    return {"name": "Spotlight History", "detail": "Search history", "size": 0, "found": found, "action": "clear_spotlight"}
-
-
 def _check_ssh() -> dict:
     known_hosts = Path.home() / ".ssh/known_hosts"
     size = 0
@@ -188,8 +212,8 @@ def _check_ssh() -> dict:
         st = safe_stat(known_hosts)
         size = st.st_size if st else 0
         try:
-            count = len(known_hosts.read_text().strip().splitlines())
-        except OSError:
+            count = len(known_hosts.read_text(errors="surrogateescape").strip().splitlines())
+        except (OSError, UnicodeDecodeError):
             pass
     return {"name": "SSH known_hosts", "detail": f"{count} entries", "size": size, "found": count > 0, "action": "clear_ssh"}
 
@@ -214,9 +238,11 @@ def _wipe_all(traces: list[dict]):
             continue
         action = t.get("action", "")
         try:
-            _execute_wipe(action, t, keep_lines)
-            wiped += 1
-            console.print(f"  [green]Wiped: {t['name']}[/]")
+            if _execute_wipe(action, t, keep_lines):
+                wiped += 1
+                console.print(f"  [green]Wiped: {t['name']}[/]")
+            else:
+                console.print(f"  [yellow]Could not wipe: {t['name']} (permission denied or protected)[/]")
         except Exception as e:
             console.print(f"  [red]Failed: {t['name']}: {e}[/]")
 
@@ -235,9 +261,11 @@ def _interactive_clean(traces: list[dict]):
         size_str = f" ({format_size(t['size'])})" if t["size"] > 0 else ""
         if confirm_action(f"  Wipe {t['name']}{size_str}?"):
             try:
-                _execute_wipe(t.get("action", ""), t, keep_lines)
-                wiped += 1
-                console.print(f"  [green]Wiped: {t['name']}[/]")
+                if _execute_wipe(t.get("action", ""), t, keep_lines):
+                    wiped += 1
+                    console.print(f"  [green]Wiped: {t['name']}[/]")
+                else:
+                    console.print(f"  [yellow]Could not wipe: {t['name']} (permission denied or protected)[/]")
             except Exception as e:
                 console.print(f"  [red]Failed: {t['name']}: {e}[/]")
 
@@ -245,52 +273,84 @@ def _interactive_clean(traces: list[dict]):
     log_action("privacy_interactive", f"wiped {wiped} categories")
 
 
-def _execute_wipe(action: str, trace: dict, keep_lines: int = 0):
+def _execute_wipe(action: str, trace: dict, keep_lines: int = 0) -> bool:
+    """Run a wipe action. Returns True only when the traces are actually gone."""
     if action == "clear_recent":
-        run_cmd(["defaults", "delete", "com.apple.recentitems"])
+        ok = True
+        for f in _recent_sfl_files():
+            try:
+                f.unlink()
+            except (OSError, PermissionError):
+                ok = False
+        run_cmd(["defaults", "delete", "com.apple.recentitems"])  # legacy, may not exist
+        return ok
     elif action == "clear_finder_recent":
-        run_cmd(["defaults", "delete", "com.apple.finder", "FXRecentFolders"])
+        _, _, rc = run_cmd(["defaults", "delete", "com.apple.finder", "FXRecentFolders"])
+        return rc == 0
     elif action == "clear_quicklook":
         run_cmd(["qlmanage", "-r", "cache"], timeout=10)
-        ql_path = Path.home() / "Library/Application Support/Quick Look"
-        if ql_path.exists():
-            shutil.rmtree(ql_path, ignore_errors=True)
-        ql_cache = Path.home() / "Library/Caches/com.apple.QuickLook.thumbnailcache"
-        if ql_cache.exists():
-            shutil.rmtree(ql_cache, ignore_errors=True)
+        ok = True
+        for p in [
+            Path.home() / "Library/Application Support/Quick Look",
+            Path.home() / "Library/Caches/com.apple.QuickLook.thumbnailcache",
+        ]:
+            if p.exists():
+                try:
+                    shutil.rmtree(p)
+                except (OSError, PermissionError):
+                    ok = ok and not p.exists()
+        return ok
     elif action == "clear_quarantine":
         db_path = Path.home() / "Library/Preferences/com.apple.LaunchServices.QuarantineEventsV2"
         if db_path.exists():
-            import sqlite3
             try:
                 conn = sqlite3.connect(str(db_path))
                 conn.execute("DELETE FROM LSQuarantineEvent")
                 conn.commit()
+                conn.execute("VACUUM")  # shrink the file so rescans see it empty
                 conn.close()
-            except Exception:
-                pass
+                return True
+            except sqlite3.Error:
+                return False
+        return True
     elif action == "clear_file":
         path = Path(trace.get("path", ""))
         if path.exists():
-            if keep_lines > 0:
-                try:
-                    lines = path.read_text().splitlines()
-                    path.write_text("\n".join(lines[-keep_lines:]) + "\n")
-                except OSError:
-                    pass
-            else:
-                path.write_text("")
+            try:
+                if keep_lines > 0:
+                    lines = path.read_text(errors="surrogateescape").splitlines()
+                    path.write_text("\n".join(lines[-keep_lines:]) + "\n", errors="surrogateescape")
+                else:
+                    path.write_text("")
+                return True
+            except (OSError, UnicodeDecodeError):
+                return False
+        return True
     elif action == "clear_dir":
         path = Path(trace.get("path", ""))
         if path.exists():
-            shutil.rmtree(path, ignore_errors=True)
-    elif action == "clear_spotlight":
-        run_cmd(["defaults", "delete", "com.apple.spotlight"])
+            try:
+                shutil.rmtree(path)
+            except (OSError, PermissionError):
+                pass
+            return not path.exists()
+        return True
     elif action == "clear_ssh":
         known_hosts = Path.home() / ".ssh/known_hosts"
         if known_hosts.exists():
-            known_hosts.write_text("")
+            try:
+                known_hosts.write_text("")
+                return True
+            except (OSError, PermissionError):
+                return False
+        return True
     elif action == "clear_siri":
         siri_path = Path.home() / "Library/Assistant"
         if siri_path.exists():
-            shutil.rmtree(siri_path, ignore_errors=True)
+            try:
+                shutil.rmtree(siri_path)
+            except (OSError, PermissionError):
+                pass
+            return not siri_path.exists()
+        return True
+    return False

@@ -27,25 +27,40 @@ except ImportError:
     send2trash = None
 
 
-def _trash_or_rm(path: Path, permanent: bool = False):
+def _trash_or_rm(path: Path, permanent: bool = False) -> bool:
     if permanent:
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-        else:
-            path.unlink(missing_ok=True)
-    elif send2trash:
         try:
-            send2trash(str(path))
-        except Exception:
             if path.is_dir():
                 shutil.rmtree(path, ignore_errors=True)
             else:
                 path.unlink(missing_ok=True)
-    else:
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-        else:
-            path.unlink(missing_ok=True)
+        except OSError:
+            return False
+        return not path.exists()
+    if send2trash:
+        try:
+            send2trash(str(path))
+            return True
+        except Exception:
+            pass
+    console.print(f"[yellow]Skipped (Trash unavailable): {path}[/]")
+    return False
+
+
+def _delete_paths(paths: list[str], permanent: bool) -> int:
+    """Delete paths, returning the number of bytes actually freed."""
+    freed = 0
+    for path_str in paths:
+        p = Path(path_str)
+        if not p.exists():
+            continue
+        try:
+            size = dir_size(p) if p.is_dir() else p.stat().st_size
+        except OSError:
+            size = 0
+        if _trash_or_rm(p, permanent) and not p.exists():
+            freed += size
+    return freed
 
 
 def run_gc(
@@ -196,34 +211,48 @@ def run_gc(
 
     if all_gc:
         if confirm_action(f"Clean {format_size(total_size)} of dev garbage?", force_yes=force_yes):
-            _execute_gc(categories, permanent)
+            _execute_gc(categories, permanent, force_yes)
     elif clean:
         _interactive_gc(categories, permanent)
 
 
-def _execute_gc(categories: list[dict], permanent: bool = False):
+def _execute_gc(categories: list[dict], permanent: bool = False, force_yes: bool = False):
     total_freed = 0
     for c in categories:
         action = c.get("action", "delete")
         if action == "brew_cleanup":
-            run_cmd(["brew", "cleanup", "--prune=all"], timeout=120)
-            total_freed += c["size"]
-            console.print(f"  [green]Homebrew cleanup done[/]")
+            _, _, rc = run_cmd(["brew", "cleanup", "--prune=all"], timeout=120)
+            if rc == 0:
+                total_freed += c["size"]
+                console.print(f"  [green]Homebrew cleanup done[/]")
         elif action == "docker_prune":
+            ran = False
             for cmd in c.get("commands", []):
-                run_cmd(cmd, timeout=120)
-            total_freed += c["size"]
-            console.print(f"  [green]Docker cleanup done[/]")
+                if cmd[:3] == ["docker", "container", "prune"]:
+                    # Container prune gets its own explicit confirmation
+                    console.print(f"  [yellow]About to prune: {c['name']}[/]")
+                    if not force_yes and not confirm_action("  Run `docker container prune -f`?"):
+                        console.print("  [dim]Skipped Docker container prune[/]")
+                        continue
+                _, _, rc = run_cmd(cmd, timeout=120)
+                if rc == 0:
+                    ran = True
+            if ran:
+                total_freed += c["size"]
+                console.print(f"  [green]Docker cleanup done[/]")
         elif action == "simctl":
-            run_cmd(["xcrun", "simctl", "delete", "unavailable"], timeout=60)
-            total_freed += c["size"]
+            _, _, rc = run_cmd(["xcrun", "simctl", "delete", "unavailable"], timeout=60)
+            if rc == 0:
+                total_freed += c["size"]
+        elif action == "go_clean":
+            _, _, rc = run_cmd(["go", "clean", "-modcache"], timeout=300)
+            if rc == 0:
+                total_freed += c["size"]
+                console.print(f"  [green]Go module cache cleaned[/]")
         else:
-            for path_str in c.get("paths", []):
-                p = Path(path_str)
-                if p.exists():
-                    _trash_or_rm(p, permanent)
-            total_freed += c["size"]
-            console.print(f"  [green]Cleaned {c['name']}[/]")
+            freed = _delete_paths(c.get("paths", []), permanent)
+            total_freed += freed
+            console.print(f"  [green]Cleaned {c['name']} ({format_size(freed)})[/]")
 
     console.print(f"\n[green bold]Total freed: ~{format_size(total_freed)}[/]")
     log_action("gc", f"freed ~{format_size(total_freed)}")
@@ -245,25 +274,52 @@ def _interactive_gc(categories: list[dict], permanent: bool = False):
         if confirm_action(f"  Clean {c['name']} ({format_size(c['size'])})?"):
             action = c.get("action", "delete")
             if action == "brew_cleanup":
-                run_cmd(["brew", "cleanup", "--prune=all"], timeout=120)
+                _, _, rc = run_cmd(["brew", "cleanup", "--prune=all"], timeout=120)
+                if rc == 0:
+                    total_freed += c["size"]
+                    console.print(f"  [green]Cleaned {c['name']}[/]")
             elif action == "docker_prune":
+                ran = False
                 for cmd in c.get("commands", []):
-                    run_cmd(cmd, timeout=120)
+                    _, _, rc = run_cmd(cmd, timeout=120)
+                    if rc == 0:
+                        ran = True
+                if ran:
+                    total_freed += c["size"]
+                    console.print(f"  [green]Cleaned {c['name']}[/]")
             elif action == "simctl":
-                run_cmd(["xcrun", "simctl", "delete", "unavailable"], timeout=60)
+                _, _, rc = run_cmd(["xcrun", "simctl", "delete", "unavailable"], timeout=60)
+                if rc == 0:
+                    total_freed += c["size"]
+                    console.print(f"  [green]Cleaned {c['name']}[/]")
+            elif action == "go_clean":
+                _, _, rc = run_cmd(["go", "clean", "-modcache"], timeout=300)
+                if rc == 0:
+                    total_freed += c["size"]
+                    console.print(f"  [green]Cleaned {c['name']}[/]")
             else:
-                for path_str in c.get("paths", []):
-                    p = Path(path_str)
-                    if p.exists():
-                        _trash_or_rm(p, permanent)
-            total_freed += c["size"]
-            console.print(f"  [green]Cleaned {c['name']}[/]")
+                freed = _delete_paths(c.get("paths", []), permanent)
+                total_freed += freed
+                console.print(f"  [green]Cleaned {c['name']} ({format_size(freed)})[/]")
 
     console.print(f"\n[green bold]Total freed: ~{format_size(total_freed)}[/]")
     log_action("gc_interactive", f"freed ~{format_size(total_freed)}")
 
 
 # ── Scanners ─────────────────────────────────────────────────────────────
+
+def _latest_mtime(candidates: list[Path]) -> float:
+    """Max mtime over the candidates that exist (0.0 if none do)."""
+    latest = 0.0
+    for p in candidates:
+        try:
+            mt = p.stat().st_mtime
+            if mt > latest:
+                latest = mt
+        except OSError:
+            continue
+    return latest
+
 
 def _find_stale_node_modules(stale_days: int) -> dict:
     cutoff = time.time() - (stale_days * 86400)
@@ -279,25 +335,30 @@ def _find_stale_node_modules(stale_days: int) -> dict:
         home / "work", home / "repos",
     ]
 
+    activity_markers = ["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", ".git/HEAD"]
+
     for base in search_dirs:
         if not base.exists():
             continue
         try:
-            for nm in base.rglob("node_modules"):
-                if not nm.is_dir():
+            for root, dirs, _files in os.walk(base):
+                if ".git" in dirs:
+                    dirs.remove(".git")
+                if "node_modules" not in dirs:
                     continue
-                # Check if parent project is stale
-                project = nm.parent
-                pkg = project / "package.json"
-                if pkg.exists():
-                    try:
-                        if pkg.stat().st_mtime < cutoff:
-                            s = dir_size(nm)
-                            total_size += s
-                            count += 1
-                            paths.append(str(nm))
-                    except OSError:
-                        pass
+                # Never descend into node_modules -- also skips nested node_modules
+                dirs.remove("node_modules")
+                project = Path(root)
+                nm = project / "node_modules"
+                if not (project / "package.json").exists():
+                    continue
+                # Stale only if ALL activity signals are older than cutoff
+                signals = [project] + [project / m for m in activity_markers]
+                if _latest_mtime(signals) < cutoff:
+                    s = dir_size(nm)
+                    total_size += s
+                    count += 1
+                    paths.append(str(nm))
                 if count >= 100:  # Safety limit
                     break
         except (OSError, PermissionError):
@@ -318,23 +379,34 @@ def _find_stale_venvs(stale_days: int) -> dict:
         home / "Developer", home / "dev", home / "code",
     ]
 
-    venv_names = [".venv", "venv", "env", ".env"]
+    venv_names = {".venv", "venv", "env", ".env"}
+    project_markers = [".git/HEAD", "pyproject.toml", "requirements.txt", "setup.py"]
 
     for base in search_dirs:
         if not base.exists():
             continue
         try:
-            for d in base.rglob("*"):
-                if d.is_dir() and d.name in venv_names and (d / "pyvenv.cfg").exists():
-                    try:
-                        project = d.parent
-                        if project.stat().st_mtime < cutoff:
-                            s = dir_size(d)
-                            total_size += s
-                            count += 1
-                            paths.append(str(d))
-                    except OSError:
-                        pass
+            for root, dirs, _files in os.walk(base):
+                project = Path(root)
+                for name in list(dirs):
+                    if name in (".git", "node_modules"):
+                        dirs.remove(name)
+                        continue
+                    if name not in venv_names:
+                        continue
+                    d = project / name
+                    # Guard: never touch non-venv ".env" dirs
+                    if not (d / "pyvenv.cfg").exists():
+                        continue
+                    dirs.remove(name)  # Don't descend into matched venvs
+                    # Stale only if ALL activity signals are older than cutoff
+                    signals = [project / m for m in project_markers] + [d / "bin"]
+                    latest = _latest_mtime(signals)
+                    if 0 < latest < cutoff:
+                        s = dir_size(d)
+                        total_size += s
+                        count += 1
+                        paths.append(str(d))
                 if count >= 50:
                     break
         except (OSError, PermissionError):
@@ -384,11 +456,39 @@ def _check_homebrew():
     return None
 
 
+def _parse_docker_size(s: str) -> int:
+    """Parse docker's decimal size notation (e.g. '1.2GB (48%)', '456.7MB', '0B')."""
+    s = s.strip()
+    if "(" in s:
+        s = s.split("(", 1)[0].strip()
+    s = s.upper()
+    units = {"TB": 1000**4, "GB": 1000**3, "MB": 1000**2, "KB": 1000, "B": 1}
+    for unit, mult in units.items():
+        if s.endswith(unit):
+            try:
+                return int(float(s[: -len(unit)]) * mult)
+            except ValueError:
+                return 0
+    return 0
+
+
 def _check_docker() -> list[dict]:
     results = []
     _, _, rc = run_cmd(["docker", "info"], timeout=5)
     if rc != 0:
         return results
+
+    # Reclaimable sizes per type from `docker system df`
+    reclaimable = {}
+    out, _, rc = run_cmd(
+        ["docker", "system", "df", "--format", "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}"],
+        timeout=10,
+    )
+    if rc == 0:
+        for line in out.strip().splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 3:
+                reclaimable[parts[0].strip()] = _parse_docker_size(parts[2])
 
     # Stopped containers
     out, _, rc = run_cmd(["docker", "ps", "-a", "--filter", "status=exited", "--format", "{{.ID}}"], timeout=10)
@@ -397,7 +497,7 @@ def _check_docker() -> list[dict]:
         if count > 0:
             results.append({
                 "name": f"Docker stopped containers ({count})",
-                "size": 0,  # Can't easily determine without `docker system df`
+                "size": reclaimable.get("Containers", 0),
                 "count": count,
                 "paths": [],
                 "action": "docker_prune",
@@ -411,19 +511,19 @@ def _check_docker() -> list[dict]:
         if count > 0:
             results.append({
                 "name": f"Docker dangling images ({count})",
-                "size": 0,
+                "size": reclaimable.get("Images", 0),
                 "count": count,
                 "paths": [],
                 "action": "docker_prune",
                 "commands": [["docker", "image", "prune", "-f"]],
             })
 
-    # Build cache
-    out, _, rc = run_cmd(["docker", "system", "df", "--format", "{{.Size}}"], timeout=10)
-    if rc == 0:
+    # Build cache -- only when docker reports non-zero reclaimable space
+    build_cache = reclaimable.get("Build Cache", 0)
+    if build_cache > 0:
         results.append({
             "name": "Docker build cache",
-            "size": 0,
+            "size": build_cache,
             "count": 1,
             "paths": [],
             "action": "docker_prune",
@@ -482,10 +582,11 @@ def _check_go_cache():
     out, _, rc = run_cmd(["go", "env", "GOPATH"], timeout=5)
     if rc != 0:
         return None
-    gopath = Path(out.strip())
+    # GOPATH may hold multiple paths -- the module cache lives in the first one
+    gopath = Path(out.strip().split(os.pathsep)[0])
     cache = gopath / "pkg/mod/cache"
     if cache.exists():
         s = dir_size(cache)
         if s > 0:
-            return {"name": "Go module cache", "size": s, "count": 1, "paths": [str(cache)], "action": "delete"}
+            return {"name": "Go module cache", "size": s, "count": 1, "paths": [str(cache)], "action": "go_clean"}
     return None

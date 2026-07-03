@@ -4,6 +4,7 @@ set -e
 
 MACMON_DIR="$HOME/.macmon"
 VENV_DIR="$MACMON_DIR/venv"
+APP_DIR="$MACMON_DIR/app"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 GREEN='\033[0;32m'
@@ -29,8 +30,8 @@ if command -v python3 &>/dev/null; then
     PY_MAJOR=$(echo "$PY_VERSION" | cut -d. -f1)
     PY_MINOR=$(echo "$PY_VERSION" | cut -d. -f2)
 
-    if [ "$PY_MAJOR" -lt 3 ] || ([ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 9 ]); then
-        echo -e "${RED}Python 3.9+ required (found $PY_VERSION)${NC}"
+    if [ "$PY_MAJOR" -lt 3 ] || ([ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 11 ]); then
+        echo -e "${RED}Python 3.11+ required (found $PY_VERSION)${NC}"
         echo "Install via: brew install python@3.12"
         exit 1
     fi
@@ -46,6 +47,14 @@ echo -e "${CYAN}Setting up ~/.macmon...${NC}"
 mkdir -p "$MACMON_DIR"
 mkdir -p "$MACMON_DIR/reports"
 
+# Copy application files to a stable location (survives moving the clone dir)
+echo -e "${CYAN}Copying application files to $APP_DIR...${NC}"
+rm -rf "$APP_DIR"
+mkdir -p "$APP_DIR"
+cp "$SCRIPT_DIR/macmon.py" "$APP_DIR/"
+cp -R "$SCRIPT_DIR/modules" "$APP_DIR/"
+cp "$SCRIPT_DIR/requirements.txt" "$APP_DIR/"
+
 # Create virtual environment
 echo -e "${CYAN}Creating virtual environment...${NC}"
 if [ -d "$VENV_DIR" ]; then
@@ -57,25 +66,27 @@ python3 -m venv "$VENV_DIR"
 # Install dependencies
 echo -e "${CYAN}Installing dependencies...${NC}"
 "$VENV_DIR/bin/pip" install --upgrade pip -q
-"$VENV_DIR/bin/pip" install -r "$SCRIPT_DIR/requirements.txt" -q
+"$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt" -q
 
 # Create wrapper script
 echo -e "${CYAN}Creating macmon command...${NC}"
 WRAPPER="/usr/local/bin/macmon"
 
-# Check if we can write to /usr/local/bin
+# Check if we can write to /usr/local/bin (may not exist on Apple Silicon)
 if [ -w "/usr/local/bin" ] || [ -w "$WRAPPER" ]; then
+    mkdir -p "/usr/local/bin"
     cat > "$WRAPPER" << WRAPPER_EOF
 #!/bin/bash
-exec "$VENV_DIR/bin/python" "$SCRIPT_DIR/macmon.py" "\$@"
+exec "$VENV_DIR/bin/python" "$APP_DIR/macmon.py" "\$@"
 WRAPPER_EOF
     chmod +x "$WRAPPER"
     echo -e "${GREEN}Installed to $WRAPPER${NC}"
 else
     echo -e "${YELLOW}Need sudo to install to /usr/local/bin${NC}"
+    sudo mkdir -p "/usr/local/bin"
     sudo bash -c "cat > '$WRAPPER'" << WRAPPER_EOF
 #!/bin/bash
-exec "$VENV_DIR/bin/python" "$SCRIPT_DIR/macmon.py" "\$@"
+exec "$VENV_DIR/bin/python" "$APP_DIR/macmon.py" "\$@"
 WRAPPER_EOF
     sudo chmod +x "$WRAPPER"
     echo -e "${GREEN}Installed to $WRAPPER${NC}"
@@ -83,7 +94,7 @@ fi
 
 # Initialize config
 echo -e "${CYAN}Initializing config...${NC}"
-"$VENV_DIR/bin/python" "$SCRIPT_DIR/macmon.py" config --init 2>/dev/null || true
+"$VENV_DIR/bin/python" "$APP_DIR/macmon.py" config --init 2>/dev/null || true
 
 echo ""
 echo -e "${GREEN}========================================${NC}"

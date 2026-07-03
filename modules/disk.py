@@ -1,11 +1,14 @@
 """Disk analyzer and large file finder for macmon."""
 
+import heapq
 import json
 import os
+import stat
 import time
 from datetime import datetime
 from pathlib import Path
 
+import typer
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
@@ -58,18 +61,25 @@ def _categorize_file(path: Path) -> tuple[str, str]:
 
 
 def _parse_size(size_str: str) -> int:
-    size_str = size_str.strip().upper()
-    multipliers = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
+    s = size_str.strip().upper()
+    multipliers = {
+        "B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4,
+        "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4,
+    }
     for unit, mult in sorted(multipliers.items(), key=lambda x: -len(x[0])):
-        if size_str.endswith(unit):
+        if s.endswith(unit):
+            num = s[: -len(unit)].strip()
+            if not num:
+                break
             try:
-                return int(float(size_str[: -len(unit)].strip()) * mult)
+                return int(float(num) * mult)
             except ValueError:
-                pass
+                break
     try:
-        return int(size_str)
+        return int(s)
     except ValueError:
-        return 50 * 1024 * 1024  # Default 50MB
+        console.print(f"[red]Invalid size: {size_str!r} -- use forms like 500M, 1.5GB, 100KB[/]")
+        raise typer.Exit(code=1)
 
 
 def find_big_files(
@@ -84,10 +94,14 @@ def find_big_files(
 
     console.print(Panel(f"[bold]macmon bigfiles[/] -- {base} (min: {format_size(min_bytes)})", border_style="cyan"))
 
-    big_files = []
     now = time.time()
+    max_results = 200
 
     skip_dirs = {".git", "node_modules", ".venv", "venv", "__pycache__", ".Trash", "Library"}
+
+    # Bounded min-heap of (size, seq, entry) holding the N largest files
+    heap = []
+    seq = 0
 
     with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as progress:
         task = progress.add_task("Scanning for large files...", total=None)
@@ -108,14 +122,15 @@ def find_big_files(
                     if file_type and not fpath.suffix.lower().lstrip(".") == file_type.lower().lstrip("."):
                         continue
 
-                    # Filter by age
+                    # Filter by age -- Spotlight refreshes atime, so a file
+                    # only counts as old if BOTH atime and mtime are old
                     if older:
-                        days_since_access = (now - st.st_atime) / 86400
-                        if days_since_access < older:
+                        last_use = max(st.st_atime, st.st_mtime)
+                        if (now - last_use) / 86400 < older:
                             continue
 
                     emoji, category = _categorize_file(fpath)
-                    big_files.append({
+                    item = (st.st_size, seq, {
                         "path": str(fpath),
                         "size": st.st_size,
                         "atime": st.st_atime,
@@ -123,16 +138,20 @@ def find_big_files(
                         "emoji": emoji,
                         "category": category,
                     })
+                    seq += 1
+                    if len(heap) < max_results:
+                        heapq.heappush(heap, item)
+                    else:
+                        heapq.heappushpop(heap, item)
                 except (OSError, PermissionError):
                     continue
 
-            if len(big_files) >= 200:
-                break
-
         progress.remove_task(task)
 
-    # iOS/macOS backups
-    if MOBILE_BACKUP.exists() and str(base) in str(Path.home()):
+    big_files = [item[2] for item in heap]
+
+    # iOS/macOS backups -- include when the scanned base contains the home dir
+    if MOBILE_BACKUP.exists() and (Path.home() == base or Path.home().is_relative_to(base)):
         try:
             s = dir_size(MOBILE_BACKUP)
             if s >= min_bytes:
@@ -185,20 +204,53 @@ def find_big_files(
     console.print(table)
 
 
+def _size_and_count(path: Path, skip_paths: set[str]) -> tuple[int, int]:
+    """Size and file count in one traversal (hardlink-aware, prunes skip_paths)."""
+    total = 0
+    count = 0
+    seen_links: set[tuple[int, int]] = set()  # count hardlinked files once
+    try:
+        for root, dirs, files in os.walk(path):
+            dirs[:] = [d for d in dirs if os.path.join(root, d) not in skip_paths]
+            for fname in files:
+                try:
+                    st = os.lstat(os.path.join(root, fname))
+                except OSError:
+                    continue
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+                if st.st_nlink > 1:
+                    key = (st.st_dev, st.st_ino)
+                    if key in seen_links:
+                        continue
+                    seen_links.add(key)
+                total += st.st_size
+                count += 1
+    except (OSError, PermissionError):
+        pass
+    return total, count
+
+
 def analyze_disk(path: str = "~", json_out: bool = False):
     base = Path(path).expanduser()
     console.print(Panel(f"[bold]macmon disk[/] -- {base}", border_style="cyan"))
 
+    home = Path.home()
+    skip_paths = set()
+    if base == home:
+        skip_paths.add(str(home / ".Trash"))
+        skip_paths.add(str(home / "Library/CloudStorage"))
+    if str(base) == "/":
+        skip_paths.update({"/System/Volumes", "/Volumes", "/dev", "/proc"})
+
     entries = []
     try:
         for d in base.iterdir():
-            if d.is_symlink():
+            if d.is_symlink() or str(d) in skip_paths:
                 continue
             try:
                 if d.is_dir():
-                    s = dir_size(d)
-                    # Count files
-                    count = sum(1 for _ in d.rglob("*") if _.is_file())
+                    s, count = _size_and_count(d, skip_paths)
                     mtime = d.stat().st_mtime
                     entries.append({
                         "path": str(d),

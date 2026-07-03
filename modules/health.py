@@ -1,8 +1,10 @@
 """System health check and reporting for macmon."""
 
 import json
+import os
+import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import psutil
@@ -22,6 +24,14 @@ from .utils import (
 
 
 def run_health(fix: bool = False, report: bool = False, json_out: bool = False):
+    if json_out:
+        # Machine-readable mode: print ONLY the JSON, no rich output
+        checks = _run_all_checks()
+        score = _calculate_score(checks)
+        print(json.dumps({"score": score, "checks": checks}, default=str))
+        log_action("health", f"score={score}")
+        return
+
     console.print(Panel("[bold]macmon health[/] -- System Health Check", border_style="green"))
 
     checks = _run_all_checks()
@@ -50,9 +60,6 @@ def run_health(fix: bool = False, report: bool = False, json_out: bool = False):
 
     if fix:
         _auto_fix(checks)
-
-    if json_out:
-        console.print_json(json.dumps({"score": score, "checks": checks}, default=str))
 
     if report:
         _save_report(score, checks)
@@ -246,7 +253,8 @@ def _check_broken_startups() -> int:
                     args = data["ProgramArguments"]
                     if args and isinstance(args, list):
                         program = args[0]
-                if program and not Path(program).exists():
+                # Only absolute paths can be reliably checked
+                if program and program.startswith("/") and not Path(program).exists():
                     count += 1
             except Exception:
                 pass
@@ -255,6 +263,7 @@ def _check_broken_startups() -> int:
 
 def _estimate_node_modules() -> int:
     count = 0
+    deadline = time.time() + 10  # wall-clock cap
     search_dirs = [
         Path.home() / "Projects", Path.home() / "Documents",
         Path.home() / "Developer", Path.home() / "dev",
@@ -263,9 +272,14 @@ def _estimate_node_modules() -> int:
         if not base.exists():
             continue
         try:
-            for d in base.rglob("node_modules"):
-                if d.is_dir():
+            for root, dirs, _ in os.walk(base):
+                if time.time() > deadline:
+                    return count
+                if "node_modules" in dirs:
                     count += 1
+                    dirs.remove("node_modules")  # do not descend into it
+                if ".git" in dirs:
+                    dirs.remove(".git")
                 if count >= 100:
                     return count
         except (OSError, PermissionError):
@@ -274,14 +288,25 @@ def _estimate_node_modules() -> int:
 
 
 def _check_docker_usage():
-    out, _, rc = run_cmd(["docker", "system", "df", "--format", "table {{.Type}}\t{{.Size}}\t{{.Reclaimable}}"], timeout=10)
+    out, _, rc = run_cmd(["docker", "system", "df", "--format", "{{.Reclaimable}}"], timeout=10)
     if rc != 0:
         return None
+    # Lines look like "3.2GB (58%)" or "0B"
+    reclaimable = 0.0
+    units = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
+    for line in out.strip().splitlines():
+        m = re.match(r"([\d.]+)\s*([KMGT]?i?B)", line.strip(), re.IGNORECASE)
+        if not m:
+            continue
+        mult = units.get(m.group(2).upper().replace("I", ""), 1)
+        reclaimable += float(m.group(1)) * mult
+    gb = reclaimable / (1024**3)
     return {
         "name": "Docker Disk Usage",
-        "status": "pass",
-        "detail": out.strip()[:60] if out.strip() else "Docker running",
-        "value": 0,
+        "status": "fail" if gb > 30 else "warn" if gb > 10 else "pass",
+        "detail": f"{format_size(int(reclaimable))} reclaimable",
+        "fix_hint": "Run `macmon docker --prune`",
+        "value": gb,
     }
 
 
@@ -322,8 +347,8 @@ def _get_last_clean_time():
         ).fetchone()
         db.close()
         if row:
-            from datetime import datetime
-            dt = datetime.fromisoformat(row["timestamp"])
+            # SQLite datetime('now') stores UTC
+            dt = datetime.fromisoformat(row["timestamp"]).replace(tzinfo=timezone.utc)
             return dt.timestamp()
     except Exception:
         pass
@@ -331,11 +356,17 @@ def _get_last_clean_time():
 
 
 def _check_macos_updates():
-    out, _, rc = run_cmd(["softwareupdate", "-l"], timeout=30)
+    # Fast local read instead of a network call; missing key means 0
+    out, _, rc = run_cmd(
+        ["defaults", "read", "/Library/Preferences/com.apple.SoftwareUpdate.plist", "LastUpdatesAvailable"],
+        timeout=5,
+    )
     if rc != 0:
-        return None
-    count = sum(1 for line in out.splitlines() if "Label:" in line or "* " in line)
-    return count
+        return 0
+    try:
+        return int(out.strip())
+    except ValueError:
+        return 0
 
 
 def _auto_fix(checks: list[dict]):
@@ -417,4 +448,5 @@ def run_report(full: bool = False, tail: bool = False, save: bool = False):
         pass
 
     if save:
-        _save_report(0, [])
+        checks = _run_all_checks()
+        _save_report(_calculate_score(checks), checks)

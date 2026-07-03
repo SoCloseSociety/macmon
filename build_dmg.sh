@@ -3,6 +3,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"  # all relative paths (icon generation, dist/) resolve from here
 APP_NAME="macmon"
 APP_BUNDLE="$SCRIPT_DIR/dist/${APP_NAME}.app"
 DMG_NAME="${APP_NAME}.dmg"
@@ -77,8 +78,10 @@ cat > "$APP_BUNDLE/Contents/MacOS/macmon-launcher" << 'LAUNCHER_EOF'
 MACMON_DIR="$HOME/.macmon"
 VENV_PYTHON="$MACMON_DIR/venv/bin/python"
 
-# Find macmon.py: check ~/.macmon/macmon.py, then /usr/local/share/macmon/macmon.py
-if [ -f "$MACMON_DIR/macmon.py" ]; then
+# Find macmon.py: check ~/.macmon/app/macmon.py (install.sh layout), then legacy paths
+if [ -f "$MACMON_DIR/app/macmon.py" ]; then
+    MACMON_SCRIPT="$MACMON_DIR/app/macmon.py"
+elif [ -f "$MACMON_DIR/macmon.py" ]; then
     MACMON_SCRIPT="$MACMON_DIR/macmon.py"
 elif [ -f "/usr/local/share/macmon/macmon.py" ]; then
     MACMON_SCRIPT="/usr/local/share/macmon/macmon.py"
@@ -184,11 +187,12 @@ def create_png(width, height, filename):
     with open(filename, 'wb') as f:
         f.write(header + ihdr + idat + iend)
 
-iconset = os.path.expanduser("dist/macmon.iconset")
-sizes = [16, 32, 64, 128, 256, 512]
+# Canonical iconset sizes (relative to SCRIPT_DIR, cd'd at the top)
+iconset = "dist/macmon.iconset"
+sizes = [16, 32, 128, 256, 512]
 for s in sizes:
     create_png(s, s, f"{iconset}/icon_{s}x{s}.png")
-    create_png(s*2, s*2, f"{iconset}/icon_{s}x{s}@2x.png") if s <= 256 else None
+    create_png(s * 2, s * 2, f"{iconset}/icon_{s}x{s}@2x.png")
 
 print("Icon PNGs generated")
 PYICON_EOF

@@ -1,4 +1,4 @@
-"""Live system dashboard for macmon — rich visual TUI."""
+"""Live system dashboard for macmon -- rich visual TUI."""
 
 import os
 import select
@@ -34,6 +34,8 @@ from .utils import (
 # ── Cached state (refreshed in background) ──────────────────────────────
 _security_cache = {"score": None, "findings": [], "last_update": 0}
 _docker_cache = {"running": [], "stopped": 0, "images": 0, "volumes": 0, "available": None, "last_update": 0}
+_security_refresh_lock = threading.Lock()
+_docker_refresh_lock = threading.Lock()
 _thermal_cache = {"cpu_temp": None, "fan_speed": None, "gpu_temp": None, "throttled": False, "last_update": 0}
 
 # ── Rate tracking ───────────────────────────────────────────────────────
@@ -124,7 +126,7 @@ def _get_battery_info() -> dict:
 
 # ── Thermal monitoring ──────────────────────────────────────────────────
 
-def _refresh_thermal_cache():
+def _refresh_thermal_cache(cpu_pct: float = 0):
     global _thermal_cache
     now = time.time()
     if now - _thermal_cache["last_update"] < 5:
@@ -133,10 +135,11 @@ def _refresh_thermal_cache():
         # macOS: use powermetrics or IOKit via subprocess
         # Try smc-based approach first (faster)
         temp = _get_cpu_temp_osx()
-        fan = _get_fan_speed_osx()
+        fan = _get_fan_speed_osx(cpu_pct)
         _thermal_cache["cpu_temp"] = temp
         _thermal_cache["fan_speed"] = fan
-        _thermal_cache["throttled"] = (temp or 0) > 90
+        # Only real sensor readings can flag throttling
+        _thermal_cache["throttled"] = temp is not None and temp > 90
         if temp:
             _temp_history.append(temp)
             if len(_temp_history) > 30:
@@ -147,14 +150,15 @@ def _refresh_thermal_cache():
 
 
 def _get_cpu_temp_osx():
-    """Get CPU temp via multiple methods on macOS."""
+    """Get CPU temp via sensor tools; None when no real sensor is available."""
     # Method 1: try osx-cpu-temp if installed
     try:
         out = subprocess.run(["osx-cpu-temp"], capture_output=True, text=True, timeout=2)
         if out.returncode == 0:
-            # e.g. "65.2°C"
-            val = out.stdout.strip().replace("°C", "").replace("C", "").strip()
-            return float(val)
+            # e.g. "65.2°C" -- a 0.0 reading means the tool has no sensor access
+            val = float(out.stdout.strip().replace("°C", "").replace("C", "").strip())
+            if val > 0:
+                return val
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
         pass
 
@@ -162,17 +166,17 @@ def _get_cpu_temp_osx():
     try:
         out = subprocess.run(["istats", "cpu", "temp", "--value-only"], capture_output=True, text=True, timeout=3)
         if out.returncode == 0 and out.stdout.strip():
-            return float(out.stdout.strip())
+            val = float(out.stdout.strip())
+            if val > 0:
+                return val
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
         pass
 
-    # Method 3: estimate from CPU usage (rough heuristic)
-    cpu = psutil.cpu_percent(interval=0)
-    # Rough estimation: idle ~40°C, full load ~95°C
-    return 40 + (cpu / 100) * 55
+    # No real sensor: report no data instead of an estimate
+    return None
 
 
-def _get_fan_speed_osx():
+def _get_fan_speed_osx(cpu_pct: float = 0):
     """Get fan speed via istats or estimation."""
     try:
         out = subprocess.run(["istats", "fan", "speed", "--value-only"], capture_output=True, text=True, timeout=3)
@@ -182,10 +186,9 @@ def _get_fan_speed_osx():
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, IndexError):
         pass
     # Estimate from CPU - typical MacBook: 0-6200 RPM
-    cpu = psutil.cpu_percent(interval=0)
-    if cpu < 20:
+    if cpu_pct < 20:
         return 0
-    return int((cpu / 100) * 5500)
+    return int((cpu_pct / 100) * 5500)
 
 
 # ── Security cache ──────────────────────────────────────────────────────
@@ -249,6 +252,22 @@ def _refresh_security_cache():
         pass
 
 
+def _refresh_security_cache_async():
+    """Refresh in a daemon thread so the render loop never blocks on run_cmd."""
+    if time.time() - _security_cache["last_update"] < 15:
+        return
+    if not _security_refresh_lock.acquire(blocking=False):
+        return  # refresh already in flight
+
+    def _worker():
+        try:
+            _refresh_security_cache()
+        finally:
+            _security_refresh_lock.release()
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 # ── Docker cache ────────────────────────────────────────────────────────
 
 def _refresh_docker_cache():
@@ -289,6 +308,22 @@ def _refresh_docker_cache():
         _docker_cache["last_update"] = now
     except Exception:
         pass
+
+
+def _refresh_docker_cache_async():
+    """Refresh in a daemon thread so the render loop never blocks on docker CLI."""
+    if time.time() - _docker_cache["last_update"] < 20:
+        return
+    if not _docker_refresh_lock.acquire(blocking=False):
+        return  # refresh already in flight
+
+    def _worker():
+        try:
+            _refresh_docker_cache()
+        finally:
+            _docker_refresh_lock.release()
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 # ── Panel builders ──────────────────────────────────────────────────────
@@ -334,9 +369,8 @@ def _build_shortcuts_bar() -> Panel:
     return Panel(Align.center(t), border_style="bright_blue", padding=(0, 0))
 
 
-def _build_cpu_panel() -> Panel:
+def _build_cpu_panel(cpu_pct: float) -> Panel:
     global _cpu_history
-    cpu_pct = psutil.cpu_percent(interval=0)
     _cpu_history.append(cpu_pct)
     _cpu_history = _cpu_history[-60:]
     cpu_per_core = psutil.cpu_percent(percpu=True)
@@ -414,8 +448,8 @@ def _build_network_battery_panel() -> Panel:
     return Panel("\n".join(lines), title="[bold blue]Net & Battery[/]", border_style="blue", padding=(0, 0))
 
 
-def _build_thermal_panel() -> Panel:
-    _refresh_thermal_cache()
+def _build_thermal_panel(cpu_pct: float) -> Panel:
+    _refresh_thermal_cache(cpu_pct)
 
     temp = _thermal_cache.get("cpu_temp")
     fan = _thermal_cache.get("fan_speed")
@@ -519,8 +553,7 @@ def _build_process_panel(max_procs: int = 15) -> Panel:
     return Panel(content, title="[bold magenta]Processes [1-9 to kill][/]", border_style="magenta", padding=(0, 0))
 
 
-def _build_alerts_panel() -> Panel:
-    cpu_pct = psutil.cpu_percent(interval=0)
+def _build_alerts_panel(cpu_pct: float) -> Panel:
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
     disk_free_gb = disk.free / (1024**3)
@@ -562,7 +595,7 @@ def _build_alerts_panel() -> Panel:
             try:
                 if p.info["status"] == psutil.STATUS_ZOMBIE:
                     zombies += 1
-                if p.info["ppid"] == 1 and categorize_process(p.info.get("name", "")) != "other":
+                if p.info["ppid"] == 1 and categorize_process(p.info.get("name") or "") != "other":
                     orphans += 1
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
@@ -585,7 +618,7 @@ def _build_alerts_panel() -> Panel:
 
 
 def _build_security_panel() -> Panel:
-    _refresh_security_cache()
+    _refresh_security_cache_async()
     lines = []
     score = _security_cache.get("score")
     if score is None:
@@ -607,7 +640,7 @@ def _build_security_panel() -> Panel:
 
 
 def _build_docker_panel() -> Panel:
-    _refresh_docker_cache()
+    _refresh_docker_cache_async()
     lines = []
     if _docker_cache.get("available") is None:
         lines.append("  [dim]Checking...[/]")
@@ -632,9 +665,8 @@ def _build_docker_panel() -> Panel:
     return Panel("\n".join(lines), title="[bold cyan]\U0001f40b Docker[/]", border_style="cyan", padding=(0, 0))
 
 
-def _build_footer() -> Panel:
+def _build_footer(cpu: float) -> Panel:
     now = datetime.now().strftime("%H:%M:%S")
-    cpu = psutil.cpu_percent(interval=0)
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
     temp = _thermal_cache.get("cpu_temp")
@@ -685,7 +717,7 @@ def _run_action_overlay(live, action_name, action_fn):
 def _action_sweep_execute(live):
     """Kill zombies, orphans, stale locks, dead ports."""
     from .processes import run_sweep
-    _run_action_overlay(live, "SWEEP -- Killing zombies, orphans, stale locks", lambda: run_sweep(force_yes=True))
+    _run_action_overlay(live, "SWEEP -- Killing zombies, orphans, stale locks", run_sweep)
     _set_status("Sweep complete")
 
 
@@ -699,21 +731,21 @@ def _action_purge_execute(live):
 def _action_clean_execute(live):
     """Full system clean (not just scan)."""
     from .cleaner import run_cleaner
-    _run_action_overlay(live, "CLEAN -- System junk, caches, browsers, apps", lambda: run_cleaner(all_clean=True, force_yes=True))
+    _run_action_overlay(live, "CLEAN -- System junk, caches, browsers, apps", lambda: run_cleaner(all_clean=True))
     _set_status("System cleaned")
 
 
 def _action_gc_execute(live):
     """Dev garbage collector (full clean)."""
     from .gc import run_gc
-    _run_action_overlay(live, "GC -- node_modules, venvs, docker, caches", lambda: run_gc(all_gc=True, force_yes=True))
+    _run_action_overlay(live, "GC -- node_modules, venvs, docker, caches", lambda: run_gc(all_gc=True))
     _set_status("Dev GC complete")
 
 
 def _action_health_execute(live):
-    """Health check with auto-fix."""
+    """Health check."""
     from .health import run_health
-    _run_action_overlay(live, "HEALTH -- Check + Auto-fix", lambda: run_health(fix=True))
+    _run_action_overlay(live, "HEALTH -- Check", lambda: run_health())
     _set_status("Health check done")
 
 
@@ -740,15 +772,29 @@ def _action_focus_execute(live):
     _set_status("Focus mode active")
 
 
+_kill_pending = {"pid": None, "time": 0}
+_KILL_BLACKLIST = {"windowserver", "launchd", "kernel_task", "loginwindow"}
+
+
 def _action_kill_process(live, index):
-    """Kill process by index in the top list."""
+    """Kill process by index in the top list. Requires the same digit twice."""
+    global _kill_pending
     if index >= len(_top_procs):
         _set_status(f"No process at #{index + 1}")
         return
     proc = _top_procs[index]
+    pname = proc["name"] or "?"
+    if pname.lower() in _KILL_BLACKLIST:
+        _set_status(f"Refusing to kill critical process {pname}")
+        return
+    now = time.time()
+    if _kill_pending["pid"] != proc["pid"] or (now - _kill_pending["time"]) > 5:
+        _kill_pending = {"pid": proc["pid"], "time": now}
+        _set_status(f"press {index + 1} again to confirm kill {pname} (PID {proc['pid']})")
+        return
+    _kill_pending = {"pid": None, "time": 0}
     try:
         p = psutil.Process(proc["pid"])
-        pname = proc["name"]
         p.terminate()
         _set_status(f"Killed {pname} (PID {proc['pid']})")
     except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
@@ -758,6 +804,10 @@ def _action_kill_process(live, index):
 # ── Main dashboard loop ─────────────────────────────────────────────────
 
 def run_dashboard(refresh: int = 2):
+    if not sys.stdin.isatty():
+        console.print("[red]dashboard requires a TTY[/]")
+        return
+
     cfg = load_config()
     refresh = cfg.get("dashboard", {}).get("refresh_seconds", refresh)
     max_procs = cfg.get("dashboard", {}).get("max_processes", 15)
@@ -774,6 +824,8 @@ def run_dashboard(refresh: int = 2):
 
         with Live(console=console, refresh_per_second=2, screen=True) as live:
             while True:
+                # Sample CPU once per frame; panels reuse this value
+                cpu_pct = psutil.cpu_percent(interval=0)
                 layout = Layout()
 
                 layout.split_column(
@@ -794,7 +846,7 @@ def run_dashboard(refresh: int = 2):
 
                 # Left: CPU, Memory, Disk, Net+Bat, Thermal
                 layout["left"].split_column(
-                    Layout(_build_cpu_panel(), name="cpu"),
+                    Layout(_build_cpu_panel(cpu_pct), name="cpu"),
                     Layout(_build_memory_panel(), name="mem"),
                     Layout(name="left_bottom"),
                 )
@@ -810,7 +862,7 @@ def run_dashboard(refresh: int = 2):
                 )
 
                 layout["left_bottom_r"].split_column(
-                    Layout(_build_thermal_panel(), name="thermal"),
+                    Layout(_build_thermal_panel(cpu_pct), name="thermal"),
                     Layout(_build_security_panel(), name="security"),
                     Layout(_build_docker_panel(), name="docker"),
                 )
@@ -818,10 +870,10 @@ def run_dashboard(refresh: int = 2):
                 # Right: processes + alerts
                 layout["right"].split_column(
                     Layout(_build_process_panel(max_procs), name="procs", ratio=3),
-                    Layout(_build_alerts_panel(), name="alerts", ratio=1),
+                    Layout(_build_alerts_panel(cpu_pct), name="alerts", ratio=1),
                 )
 
-                layout["footer"].update(_build_footer())
+                layout["footer"].update(_build_footer(cpu_pct))
 
                 live.update(layout)
 

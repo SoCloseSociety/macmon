@@ -1,5 +1,6 @@
 """Process manager, sweep, and port management for macmon."""
 
+import fcntl
 import json
 import os
 import signal
@@ -26,31 +27,38 @@ from .utils import (
 # ── Process Listing ──────────────────────────────────────────────────────
 
 def list_processes(filter_cat: str = None, sort_by: str = "cpu", tree: bool = False, json_out: bool = False):
-    psutil.cpu_percent(interval=0.1)
+    # First pass primes per-process CPU counters (first cpu_percent always reads 0.0),
+    # second pass after a short delay reads real values
+    cached = list(psutil.process_iter(["pid", "ppid", "name", "cpu_percent", "memory_info", "status", "create_time", "username"]))
+    time.sleep(0.5)
     procs = []
-    for p in psutil.process_iter(["pid", "ppid", "name", "cpu_percent", "memory_info", "status", "create_time", "username"]):
+    for p in cached:
         try:
             info = p.info
-            cat = categorize_process(info["name"])
+            name = info["name"] or ""
+            cat = categorize_process(name)
             if filter_cat and cat != filter_cat:
                 continue
+            try:
+                cpu = p.cpu_percent(interval=None)
+            except (psutil.ZombieProcess, psutil.AccessDenied):
+                cpu = info["cpu_percent"] or 0
             # Skip low-usage "other" processes
-            cpu = info["cpu_percent"] or 0
             ram = info["memory_info"].rss if info["memory_info"] else 0
             if cat == "other" and cpu < 1.0 and ram < 50 * 1024 * 1024:
                 continue
             procs.append({
                 "pid": info["pid"],
                 "ppid": info["ppid"],
-                "name": info["name"],
-                "cpu": info["cpu_percent"] or 0,
-                "ram": info["memory_info"].rss if info["memory_info"] else 0,
+                "name": name,
+                "cpu": cpu,
+                "ram": ram,
                 "status": info["status"],
                 "created": info["create_time"] or 0,
                 "user": info["username"] or "",
                 "category": cat,
             })
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
 
     sort_key = {"cpu": "cpu", "ram": "ram", "name": "name", "runtime": "created"}.get(sort_by, "cpu")
@@ -94,12 +102,18 @@ def list_processes(filter_cat: str = None, sort_by: str = "cpu", tree: bool = Fa
 
 def _print_tree(procs: list[dict]):
     by_ppid: dict[int, list[dict]] = {}
+    pids = {p["pid"] for p in procs}
     for p in procs:
         by_ppid.setdefault(p["ppid"], []).append(p)
+
+    visited: set[int] = set()  # guards pid==ppid self-recursion (kernel_task pid 0)
 
     def _render(pid: int, indent: int = 0):
         children = by_ppid.get(pid, [])
         for child in children:
+            if child["pid"] in visited:
+                continue
+            visited.add(child["pid"])
             prefix = "  " * indent + ("|- " if indent > 0 else "")
             emoji = CATEGORY_EMOJI.get(child["category"], CATEGORY_EMOJI["other"])
             console.print(
@@ -111,25 +125,39 @@ def _print_tree(procs: list[dict]):
     console.print("[bold]Process Tree:[/]")
     _render(1)  # Start from launchd (PID 1)
     _render(0)  # Also root processes
+    # Processes whose parent was filtered out become additional roots
+    for p in procs:
+        if p["pid"] in visited or p["ppid"] in pids:
+            continue
+        visited.add(p["pid"])
+        emoji = CATEGORY_EMOJI.get(p["category"], CATEGORY_EMOJI["other"])
+        console.print(
+            f"{emoji} [bold]{p['name']}[/] "
+            f"(PID:{p['pid']} CPU:{p['cpu']:.1f}% RAM:{format_size(p['ram'])})"
+        )
+        _render(p["pid"], 1)
 
 
 # ── Kill / Suspend / Resume / Nice ───────────────────────────────────────
 
 def _find_process(target: str) -> list[psutil.Process]:
-    """Find process by PID or name."""
+    """Find process by PID or name. Never matches macmon itself."""
     matches = []
     try:
         pid = int(target)
-        try:
-            matches.append(psutil.Process(pid))
-        except psutil.NoSuchProcess:
-            pass
+        if pid != os.getpid():
+            try:
+                matches.append(psutil.Process(pid))
+            except psutil.NoSuchProcess:
+                pass
     except ValueError:
         for p in psutil.process_iter(["pid", "name"]):
             try:
-                if target.lower() in p.info["name"].lower():
+                if p.info["pid"] == os.getpid():
+                    continue
+                if target.lower() in (p.info["name"] or "").lower():
                     matches.append(p)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
     return matches
 
@@ -139,9 +167,11 @@ def kill_process(target: str, category: str = None, force_yes: bool = False):
         procs = []
         for p in psutil.process_iter(["pid", "name"]):
             try:
-                if categorize_process(p.info["name"]) == category:
+                if p.info["pid"] == os.getpid():
+                    continue
+                if categorize_process(p.info["name"] or "") == category:
                     procs.append(p)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
         if not procs:
             console.print(f"[yellow]No processes in category '{category}'[/]")
@@ -213,8 +243,9 @@ def renice_process(target: str, value: int):
 
 
 def quit_app(app_name: str):
+    safe_name = app_name.replace("\\", "\\\\").replace('"', '\\"')
     out, err, rc = run_cmd([
-        "osascript", "-e", f'tell application "{app_name}" to quit'
+        "osascript", "-e", f'tell application "{safe_name}" to quit'
     ])
     if rc == 0:
         console.print(f"[green]Quit {app_name}[/]")
@@ -240,9 +271,11 @@ def purge_ram():
     mem_before = psutil.virtual_memory()
     console.print(f"[cyan]RAM before: {format_size(mem_before.used)} used, {format_size(mem_before.available)} available[/]")
     console.print("[yellow]Running sudo purge...[/]")
-    _, err, rc = run_cmd(["purge"], sudo=True, timeout=30)
+    # sudo -n fails fast instead of hanging on a password prompt run_cmd cannot show
+    _, err, rc = run_cmd(["sudo", "-n", "purge"], timeout=30)
     if rc != 0:
-        console.print(f"[red]Purge failed: {err}[/]")
+        console.print(f"[red]Purge failed: {err.strip() or 'sudo needs a password'}[/]")
+        console.print("[yellow]Run 'sudo -v' first to cache credentials, or configure NOPASSWD for /usr/sbin/purge.[/]")
         return
     time.sleep(1)
     mem_after = psutil.virtual_memory()
@@ -302,26 +335,33 @@ def _kill_zombies(force_yes: bool = False) -> int:
     table.add_column("Dead Since", width=15)
     for z in zombies:
         created = format_duration(time.time() - z["create_time"]) if z["create_time"] else "?"
-        table.add_row(str(z["pid"]), str(z["ppid"]), z["name"], created)
+        table.add_row(str(z["pid"]), str(z["ppid"]), z["name"] or "?", created)
     console.print(table)
 
-    if confirm_action(f"Kill {len(zombies)} zombie processes?", force_yes=force_yes):
-        killed = 0
+    if confirm_action(f"Try to reap {len(zombies)} zombie processes?", force_yes=force_yes):
+        # Nudge each parent with SIGCHLD so it reaps its child; never terminate
+        # the parent, and never signal pid <= 1 (zombies themselves ignore signals)
         for z in zombies:
-            try:
-                # Kill parent to reap zombie
-                parent = psutil.Process(z["ppid"])
-                parent.terminate()
-                killed += 1
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            ppid = z["ppid"] or 0
+            if ppid > 1:
                 try:
-                    os.kill(z["pid"], signal.SIGKILL)
-                    killed += 1
+                    os.kill(ppid, signal.SIGCHLD)
                 except (ProcessLookupError, PermissionError):
                     pass
-        console.print(f"[green]Cleaned {killed} zombie processes.[/]")
-        log_action("sweep_zombies", f"killed {killed}")
-        return killed
+        time.sleep(1)
+        remaining = []
+        for z in zombies:
+            try:
+                if psutil.Process(z["pid"]).status() == psutil.STATUS_ZOMBIE:
+                    remaining.append(z)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        reaped = len(zombies) - len(remaining)
+        console.print(f"[green]Reaped {reaped} zombie processes.[/]")
+        if remaining:
+            console.print(f"[yellow]{len(remaining)} zombies remain (their parent did not reap them; they use no resources).[/]")
+        log_action("sweep_zombies", f"reaped {reaped}, {len(remaining)} remain")
+        return reaped
     return 0
 
 
@@ -331,20 +371,30 @@ def _kill_orphans(force_yes: bool = False) -> int:
     for p in psutil.process_iter(["pid", "ppid", "name", "cpu_percent", "memory_info", "status", "create_time"]):
         try:
             info = p.info
-            if info["ppid"] != 1:
+            if info["ppid"] != 1 or info["pid"] == os.getpid():
                 continue
-            cat = categorize_process(info["name"])
+            name = info["name"] or ""
+            cat = categorize_process(name)
             if cat not in dev_categories:
                 continue
             # Skip system-essential processes
-            if info["name"] in ("launchd", "kernel_task", "WindowServer"):
+            if name in ("launchd", "kernel_task", "WindowServer"):
+                continue
+            # ppid==1 is not enough on macOS: launchd parents all GUI apps and
+            # LaunchAgents. Require no controlling terminal and an executable
+            # outside /Applications and /System before calling it an orphan.
+            if p.terminal() is not None:
+                continue
+            exe = p.exe()
+            if not exe or exe.startswith(("/Applications/", "/System/")):
                 continue
             orphans.append({
                 **info,
+                "name": name,
                 "ram": info["memory_info"].rss if info["memory_info"] else 0,
                 "category": cat,
             })
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
 
     if not orphans:
@@ -464,8 +514,26 @@ def _find_dead_port_holders_lsof(ports: list[int]) -> list[dict]:
     return dead
 
 
+def _lock_is_stale(f: Path) -> bool:
+    """A .lock file is stale only if its embedded PID is dead or nobody holds
+    an flock on it. mtime age alone is not evidence."""
+    try:
+        content = f.read_text(errors="ignore").strip()
+    except OSError:
+        return False
+    if content.isdigit():
+        return not psutil.pid_exists(int(content))
+    try:
+        with open(f, "rb") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fh, fcntl.LOCK_UN)
+        return True
+    except OSError:
+        return False
+
+
 def _clean_stale_locks(force_yes: bool = False) -> int:
-    lock_patterns = ["*.lock", "*.pid", "*.sock"]
+    lock_patterns = ["*.lock", "*.pid"]
     search_dirs = [Path.home(), Path("/tmp")]
     stale = []
 
@@ -484,10 +552,10 @@ def _clean_stale_locks(force_yes: bool = False) -> int:
                         except (ValueError, OSError):
                             pass
                     elif f.suffix == ".lock":
-                        # Check age > 1 hour
+                        # Age > 1 hour AND (dead embedded PID or flock acquirable)
                         try:
                             age = time.time() - f.stat().st_mtime
-                            if age > 3600:
+                            if age > 3600 and _lock_is_stale(f):
                                 stale.append(f)
                         except OSError:
                             pass
@@ -564,18 +632,20 @@ def manage_ports(free_port: int = None, free_all: bool = False, force_yes: bool 
 
 def _free_port(port: int, force_yes: bool = False):
     out, _, rc = run_cmd(["lsof", "-ti", f"tcp:{port}"], timeout=5)
-    if rc == 0 and out.strip():
-        for pid_str in out.strip().splitlines():
-            try:
-                pid = int(pid_str.strip())
-                p = psutil.Process(pid)
-                if confirm_action(f"Kill {p.name()} (PID {pid}) on port {port}?", force_yes=force_yes):
-                    p.terminate()
-                    console.print(f"[green]Freed port {port} (killed {p.name()})[/]")
-                    log_action("free_port", f"port {port} pid {pid}")
-                    return
-            except (ValueError, psutil.NoSuchProcess, psutil.AccessDenied) as e:
-                console.print(f"[red]Error freeing port {port}: {e}[/]")
-                return
-    else:
+    if not (rc == 0 and out.strip()):
         console.print(f"[dim]Port {port} is not in use.[/]")
+        return
+    killed = 0
+    for pid_str in out.strip().splitlines():
+        try:
+            pid = int(pid_str.strip())
+            p = psutil.Process(pid)
+            if confirm_action(f"Kill {p.name()} (PID {pid}) on port {port}?", force_yes=force_yes):
+                p.terminate()
+                killed += 1
+                log_action("free_port", f"port {port} pid {pid}")
+        except (ValueError, psutil.NoSuchProcess, psutil.AccessDenied) as e:
+            console.print(f"[red]Error freeing port {port}: {e}[/]")
+            continue
+    if killed:
+        console.print(f"[green]Freed port {port} (killed {killed} process{'es' if killed != 1 else ''})[/]")

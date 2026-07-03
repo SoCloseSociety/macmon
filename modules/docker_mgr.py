@@ -246,9 +246,8 @@ def _docker_stats():
     try:
         subprocess.run(
             ["docker", "stats", "--format", "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}"],
-            timeout=30,
         )
-    except (subprocess.TimeoutExpired, KeyboardInterrupt):
+    except KeyboardInterrupt:
         pass
 
 
@@ -304,9 +303,14 @@ def _docker_stop_all(force_yes: bool = False):
     console.print(f"[yellow]Found {len(container_ids)} running containers.[/]")
 
     if confirm_action(f"Stop all {len(container_ids)} containers?", force_yes=force_yes):
-        run_cmd(["docker", "stop"] + container_ids, timeout=60)
-        console.print(f"[green]Stopped {len(container_ids)} containers.[/]")
-        log_action("docker_stop_all", f"{len(container_ids)} containers")
+        # Scale timeout with container count (docker stop waits up to 10s each)
+        timeout = max(60, 10 * len(container_ids))
+        _, err, rc = run_cmd(["docker", "stop"] + container_ids, timeout=timeout)
+        if rc == 0:
+            console.print(f"[green]Stopped {len(container_ids)} containers.[/]")
+            log_action("docker_stop_all", f"{len(container_ids)} containers")
+        else:
+            console.print(f"[red]Failed to stop some containers: {err.strip()[:200] if err else 'unknown error'}[/]")
 
 
 def _docker_restart(container: str):
@@ -334,22 +338,38 @@ def _list_compose(json_out: bool = False):
     if rc == 0 and out.strip():
         try:
             projects = json.loads(out)
-            table = Table(title="Compose Projects", border_style="cyan")
-            table.add_column("Name", width=25)
-            table.add_column("Status", width=20)
-            table.add_column("Config", width=40)
-
-            for p in projects:
-                status = p.get("Status", "")
-                status_color = "green" if "running" in status.lower() else "yellow"
-                table.add_row(
-                    p.get("Name", ""),
-                    f"[{status_color}]{status}[/]",
-                    p.get("ConfigFiles", "")[:40],
-                )
-            console.print(table)
         except json.JSONDecodeError:
+            # Newer compose emits NDJSON (one JSON object per line)
+            projects = []
+            for line in out.strip().splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    projects.append(json.loads(line))
+                except json.JSONDecodeError:
+                    projects = None
+                    break
+        if projects is None:
             console.print(out)
+            return
+        if isinstance(projects, dict):
+            projects = [projects]
+
+        table = Table(title="Compose Projects", border_style="cyan")
+        table.add_column("Name", width=25)
+        table.add_column("Status", width=20)
+        table.add_column("Config", width=40)
+
+        for p in projects:
+            status = p.get("Status", "")
+            status_color = "green" if "running" in status.lower() else "yellow"
+            table.add_row(
+                p.get("Name", ""),
+                f"[{status_color}]{status}[/]",
+                p.get("ConfigFiles", "")[:40],
+            )
+        console.print(table)
     else:
         console.print("[dim]No Compose projects found or Docker Compose not available.[/]")
 

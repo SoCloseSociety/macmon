@@ -11,11 +11,8 @@ from .utils import CONFIG_PATH, MACMON_DIR, console, ensure_dirs, log_action
 
 try:
     import tomllib
-except ImportError:
-    try:
-        import tomli as tomllib
-    except ImportError:
-        tomllib = None
+except ImportError as e:
+    raise ImportError("macmon requires Python 3.11+ (tomllib not available)") from e
 
 DEFAULT_CONFIG = """\
 # macmon configuration
@@ -67,12 +64,8 @@ def load_config() -> dict:
     if not CONFIG_PATH.exists():
         init_config()
     try:
-        if tomllib:
-            with open(CONFIG_PATH, "rb") as f:
-                return tomllib.load(f)
-        else:
-            # Fallback: parse basic TOML manually for key settings
-            return _parse_basic_toml(CONFIG_PATH)
+        with open(CONFIG_PATH, "rb") as f:
+            return tomllib.load(f)
     except Exception as e:
         console.print(f"[yellow]Warning: Could not parse config: {e}[/yellow]")
         return _defaults()
@@ -97,12 +90,6 @@ def _defaults() -> dict:
         "notifications": {"style": "osascript"},
         "autopilot": {"enabled": True, "interval_seconds": 30},
     }
-
-
-def _parse_basic_toml(path: Path) -> dict:
-    """Very basic TOML parser fallback."""
-    config = _defaults()
-    return config
 
 
 def init_config():
@@ -135,13 +122,20 @@ def set_config(key: str, value: str):
         if stripped.startswith(key) and "=" in stripped:
             k = stripped.split("=")[0].strip()
             if k == key:
-                # Try to preserve type
-                if value.lower() in ("true", "false"):
-                    lines[i] = f"{key} = {value.lower()}"
-                elif value.isdigit():
-                    lines[i] = f"{key} = {value}"
-                else:
-                    lines[i] = f'{key} = "{value}"'
+                # Coerce type: int -> float -> bool -> quoted string
+                try:
+                    int(value)
+                    rendered = value.strip()
+                except ValueError:
+                    try:
+                        float(value)
+                        rendered = value.strip()
+                    except ValueError:
+                        if value.lower() in ("true", "false"):
+                            rendered = value.lower()
+                        else:
+                            rendered = f'"{value}"'
+                lines[i] = f"{key} = {rendered}"
                 found = True
                 break
     if not found:
@@ -154,7 +148,8 @@ def set_config(key: str, value: str):
 
 def edit_config():
     import os
+    import shlex
     editor = os.environ.get("EDITOR", "nano")
     if not CONFIG_PATH.exists():
         init_config()
-    subprocess.run([editor, str(CONFIG_PATH)])
+    subprocess.run(shlex.split(editor) + [str(CONFIG_PATH)])

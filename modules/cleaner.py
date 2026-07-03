@@ -3,10 +3,12 @@
 import json
 import os
 import shutil
-import sqlite3
+import subprocess
+import sys
 import time
-from datetime import datetime, timedelta
 from pathlib import Path
+
+import psutil
 
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -30,22 +32,32 @@ except ImportError:
     send2trash = None
 
 
-def _trash_or_rm(path: Path, permanent: bool = False):
-    if permanent:
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-        else:
-            path.unlink(missing_ok=True)
-    elif send2trash:
-        try:
-            send2trash(str(path))
-        except Exception:
-            path.unlink(missing_ok=True) if path.is_file() else shutil.rmtree(path, ignore_errors=True)
-    else:
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-        else:
-            path.unlink(missing_ok=True)
+def _trash_or_rm(path: Path, permanent: bool = False) -> bool:
+    """Delete a path. Returns True only if the path is actually gone.
+
+    Without --permanent, files go to Trash; if Trash fails the path is
+    SKIPPED (never silently escalated to permanent deletion).
+    """
+    try:
+        if permanent:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+            return True
+        if send2trash:
+            try:
+                send2trash(str(path))
+                return True
+            except Exception as e:
+                console.print(f"[yellow]  Skipped (Trash unavailable): {path} -- {e}[/]")
+                console.print("[dim]  Use --permanent to force deletion without Trash.[/]")
+                return False
+        console.print(f"[yellow]  Skipped (send2trash not installed): {path}[/]")
+        return False
+    except (OSError, PermissionError) as e:
+        console.print(f"[yellow]  Skipped ({e.__class__.__name__}): {path}[/]")
+        return False
 
 
 # ── Browser paths ────────────────────────────────────────────────────────
@@ -68,7 +80,33 @@ BROWSER_CLEAN_PATTERNS = {
     "sessions": ["Sessions", "Last Session", "Last Tabs"],
     "storage": ["Local Storage", "Session Storage", "IndexedDB", "Service Worker"],
     "crash": ["Crashpad/reports"],
-    "misc": ["Top Sites", "Thumbnails", "Favicons", "Web Data"],
+    "misc": ["Top Sites", "Thumbnails", "Favicons"],
+}
+
+# Categories safe to clean by default (no logins, autofill, or history lost)
+DEFAULT_BROWSER_CATEGORIES = ["cache", "crash"]
+
+# Main HTTP disk caches live under ~/Library/Caches/<vendor>, not App Support
+BROWSER_CACHE_DIRS = {
+    "chrome": Path.home() / "Library/Caches/Google/Chrome",
+    "chromium": Path.home() / "Library/Caches/Chromium",
+    "firefox": Path.home() / "Library/Caches/Firefox/Profiles",
+    "arc": Path.home() / "Library/Caches/Arc",
+    "brave": Path.home() / "Library/Caches/BraveSoftware/Brave-Browser",
+    "opera": Path.home() / "Library/Caches/com.operasoftware.Opera",
+    "edge": Path.home() / "Library/Caches/Microsoft Edge",
+}
+
+# Process names used to refuse cleaning a running browser's databases
+BROWSER_PROCESS_NAMES = {
+    "chrome": ["Google Chrome"],
+    "chromium": ["Chromium"],
+    "safari": ["Safari"],
+    "firefox": ["firefox"],
+    "arc": ["Arc"],
+    "brave": ["Brave Browser"],
+    "opera": ["Opera"],
+    "edge": ["Microsoft Edge"],
 }
 
 SAFARI_EXTRA = {
@@ -88,6 +126,7 @@ APP_CLEANERS = {
     "xcode_archives": {
         "name": "Xcode Archives",
         "path": Path.home() / "Library/Developer/Xcode/Archives",
+        "risky": True,  # release dSYMs -- irreplaceable, opt-in only
     },
     "xcode_device_support": {
         "name": "Xcode Device Support",
@@ -136,6 +175,7 @@ APP_CLEANERS = {
     "maven_repo": {
         "name": "Maven Repository",
         "path": Path.home() / ".m2/repository",
+        "risky": True,  # full local repo, expensive to re-download -- opt-in only
     },
     "cocoapods_cache": {
         "name": "CocoaPods Cache",
@@ -147,7 +187,10 @@ APP_CLEANERS = {
     },
     "gem_cache": {
         "name": "Ruby Gem Cache",
-        "path": Path.home() / ".gem",
+        # Only the downloaded .gem archives -- NOT ~/.gem itself, which holds
+        # installed gems and ~/.gem/credentials (RubyGems API key)
+        "path": Path.home() / ".gem/ruby",
+        "risky": True,
     },
     "zoom_cache": {
         "name": "Zoom Cache",
@@ -181,14 +224,23 @@ def run_cleaner(
             return
 
     if clipboard:
+        if scan:
+            console.print("[dim]Preview: would clear the clipboard. Run without --scan to apply.[/]")
+            return
         _clean_clipboard()
         return
 
     if recent:
+        if scan:
+            console.print("[dim]Preview: would clear macOS recent items lists. Run without --scan to apply.[/]")
+            return
         _clean_recent_items(force_yes=force_yes)
         return
 
     if schedule:
+        if scan:
+            console.print("[dim]Preview: would install the weekly auto-clean LaunchAgent. Run without --scan to apply.[/]")
+            return
         _setup_schedule()
         return
 
@@ -258,20 +310,29 @@ def run_cleaner(
         if confirm_action(f"Clean {format_size(total_size)} across {total_files} items?", force_yes=force_yes):
             _execute_clean(results, permanent)
     elif run:
-        _interactive_clean(results, permanent)
+        _interactive_clean(results, permanent, force_yes=force_yes)
+
+
+def _clean_paths(paths: list[str], permanent: bool = False) -> int:
+    """Delete each path, returning the number of bytes actually freed."""
+    freed = 0
+    for path in paths:
+        try:
+            p = Path(path)
+            if not p.exists():
+                continue
+            size = dir_size(p) if p.is_dir() and not p.is_symlink() else (safe_stat(p).st_size if safe_stat(p) else 0)
+            if _trash_or_rm(p, permanent):
+                freed += size
+        except (OSError, PermissionError) as e:
+            console.print(f"[red]  Error: {e}[/]")
+    return freed
 
 
 def _execute_clean(results: list[dict], permanent: bool = False):
     total_freed = 0
     for r in results:
-        for path in r.get("paths", []):
-            try:
-                p = Path(path)
-                if p.exists():
-                    _trash_or_rm(p, permanent)
-                    total_freed += r["size"]
-            except (OSError, PermissionError) as e:
-                console.print(f"[red]  Error: {e}[/]")
+        total_freed += _clean_paths(r.get("paths", []), permanent)
 
     console.print(f"\n[green bold]Cleaned ~{format_size(total_freed)}[/]")
     log_action("clean", f"freed ~{format_size(total_freed)}")
@@ -285,21 +346,15 @@ def _execute_clean(results: list[dict], permanent: bool = False):
     db.close()
 
 
-def _interactive_clean(results: list[dict], permanent: bool = False):
+def _interactive_clean(results: list[dict], permanent: bool = False, force_yes: bool = False):
     total_freed = 0
     for r in sorted(results, key=lambda x: x["size"], reverse=True):
         if r["size"] == 0:
             continue
-        if confirm_action(f"  Clean {r['name']} ({format_size(r['size'])})?"):
-            for path in r.get("paths", []):
-                try:
-                    p = Path(path)
-                    if p.exists():
-                        _trash_or_rm(p, permanent)
-                except (OSError, PermissionError):
-                    pass
-            total_freed += r["size"]
-            console.print(f"  [green]Cleaned {r['name']}[/]")
+        if confirm_action(f"  Clean {r['name']} ({format_size(r['size'])})?", force_yes=force_yes):
+            freed = _clean_paths(r.get("paths", []), permanent)
+            total_freed += freed
+            console.print(f"  [green]Cleaned {r['name']} ({format_size(freed)})[/]")
 
     console.print(f"\n[green bold]Total freed: ~{format_size(total_freed)}[/]")
     log_action("clean_interactive", f"freed ~{format_size(total_freed)}")
@@ -319,31 +374,40 @@ def _scan_system_junk() -> list[dict]:
         size, count, paths = _scan_old_files(user_logs, cutoff)
         results.append({"name": "User Logs (old)", "size": size, "count": count, "paths": paths})
 
-    # Crash reports
+    # Crash reports (individual files only; skip root-owned system dir when not writable)
     for crash_dir in [
         Path.home() / "Library/Logs/DiagnosticReports",
         Path("/Library/Logs/DiagnosticReports"),
     ]:
-        if crash_dir.exists():
+        if crash_dir.exists() and os.access(crash_dir, os.W_OK):
             size, count, paths = _scan_dir_all(crash_dir)
             results.append({"name": f"Crash Reports ({crash_dir.name})", "size": size, "count": count, "paths": paths})
 
-    # User temp
+    # User temp (3+ days old -- fresher files may be in active use)
     tmpdir = os.environ.get("TMPDIR", "/tmp")
     tmppath = Path(tmpdir)
     if tmppath.exists():
-        one_hour_ago = time.time() - 3600
-        size, count, paths = _scan_old_files(tmppath, one_hour_ago)
+        three_days_ago = time.time() - 3 * 86400
+        size, count, paths = _scan_old_files(tmppath, three_days_ago)
         results.append({"name": "User Temp Files", "size": size, "count": count, "paths": paths})
 
     # /private/tmp old files
     private_tmp = Path("/private/tmp")
     if private_tmp.exists():
-        day_ago = time.time() - 86400
-        size, count, paths = _scan_old_files(private_tmp, day_ago)
+        three_days_ago = time.time() - 3 * 86400
+        size, count, paths = _scan_old_files(private_tmp, three_days_ago)
         results.append({"name": "System Temp (old)", "size": size, "count": count, "paths": paths})
 
     return results
+
+
+# Files that act as live markers for running processes -- never clean them
+_TEMP_SKIP_SUFFIXES = (".lock", ".pid", ".sock")
+
+
+def _is_protected_temp_file(f: Path) -> bool:
+    name = f.name
+    return name.startswith(".") or name.lower().endswith(_TEMP_SKIP_SUFFIXES)
 
 
 def _scan_old_files(directory: Path, cutoff: float) -> tuple[int, int, list[str]]:
@@ -352,7 +416,7 @@ def _scan_old_files(directory: Path, cutoff: float) -> tuple[int, int, list[str]
     paths = []
     try:
         for f in directory.rglob("*"):
-            if f.is_file() and not f.is_symlink():
+            if f.is_file() and not f.is_symlink() and not _is_protected_temp_file(f):
                 try:
                     st = f.stat()
                     if st.st_mtime < cutoff:
@@ -367,15 +431,17 @@ def _scan_old_files(directory: Path, cutoff: float) -> tuple[int, int, list[str]
 
 
 def _scan_dir_all(directory: Path) -> tuple[int, int, list[str]]:
+    """Collect individual files inside a directory (never the directory itself)."""
     total_size = 0
     count = 0
-    paths = [str(directory)]
+    paths = []
     try:
         for f in directory.rglob("*"):
-            if f.is_file():
+            if f.is_file() and not f.is_symlink():
                 try:
                     total_size += f.stat().st_size
                     count += 1
+                    paths.append(str(f))
                 except (OSError, PermissionError):
                     pass
     except (OSError, PermissionError):
@@ -385,12 +451,25 @@ def _scan_dir_all(directory: Path) -> tuple[int, int, list[str]]:
 
 # ── Browser Scanner ──────────────────────────────────────────────────────
 
+def _check_full_disk_access() -> bool:
+    """Probe a TCC-protected path; False means Full Disk Access is missing."""
+    safari_dir = Path.home() / "Library/Safari"
+    if not safari_dir.exists():
+        return True
+    try:
+        next(safari_dir.iterdir(), None)
+        return True
+    except PermissionError:
+        return False
+
+
 def _scan_all_browsers() -> list[dict]:
     results = []
+    if not _check_full_disk_access():
+        console.print("[yellow]Note: Safari data is TCC-protected -- grant your terminal Full Disk Access to include it.[/]")
     for name, base_path in BROWSER_PATHS.items():
         if not base_path.exists():
             continue
-        size = dir_size(base_path)
         cache_size = 0
         cache_paths = []
         for pattern in BROWSER_CLEAN_PATTERNS.get("cache", []):
@@ -399,6 +478,13 @@ def _scan_all_browsers() -> list[dict]:
                     s = dir_size(match)
                     cache_size += s
                     cache_paths.append(str(match))
+        # Main HTTP disk cache lives under ~/Library/Caches/<vendor>
+        vendor_cache = BROWSER_CACHE_DIRS.get(name)
+        if vendor_cache and vendor_cache.exists():
+            s = dir_size(vendor_cache)
+            if s > 0:
+                cache_size += s
+                cache_paths.append(str(vendor_cache))
         if cache_size > 0:
             results.append({
                 "name": f"{name.title()} Cache",
@@ -434,6 +520,20 @@ def _scan_all_browsers() -> list[dict]:
     return results
 
 
+def _running_browsers(names) -> set[str]:
+    """Return the subset of browser keys whose process is currently running."""
+    wanted = {}
+    for key in names:
+        for proc_name in BROWSER_PROCESS_NAMES.get(key, []):
+            wanted[proc_name.lower()] = key
+    running = set()
+    for p in psutil.process_iter(["name"]):
+        name = (p.info["name"] or "").lower()
+        if name in wanted:
+            running.add(wanted[name])
+    return running
+
+
 def _clean_browsers(
     scan_only: bool = False,
     all_browsers: bool = False,
@@ -466,14 +566,25 @@ def _clean_browsers(
             console.print(f"  {name.title()}: {format_size(s)}")
         targets = available
 
-    # Determine what to clean
+    # Determine what to clean. Default is cache + crash reports only:
+    # cookies/history/storage hold logins and user data and are opt-in.
     clean_categories = []
     if cache:
         clean_categories.append("cache")
     if cookies:
         clean_categories.append("cookies")
     if not clean_categories:
-        clean_categories = list(BROWSER_CLEAN_PATTERNS.keys())
+        clean_categories = list(DEFAULT_BROWSER_CATEGORIES)
+
+    # Refuse to touch live browser databases (cookies etc.) while running
+    risky_cats = [c for c in clean_categories if c not in ("cache", "crash")]
+    if risky_cats:
+        running = _running_browsers(targets.keys())
+        for name in running:
+            console.print(f"[yellow]{name.title()} is running -- skipping its {'/'.join(risky_cats)} data. Quit it first.[/]")
+        targets = {k: v for k, v in targets.items() if k not in running}
+        if not targets:
+            return
 
     results = []
     for name, base_path in targets.items():
@@ -483,8 +594,9 @@ def _clean_browsers(
             patterns = BROWSER_CLEAN_PATTERNS.get(cat, [])
             for pattern in patterns:
                 for match in base_path.rglob(pattern):
-                    if match.exists():
-                        s = dir_size(match) if match.is_dir() else match.stat().st_size
+                    st = safe_stat(match)
+                    if st:
+                        s = dir_size(match) if match.is_dir() else st.st_size
                         if s > 0:
                             results.append({
                                 "name": f"{name.title()} - {cat}/{pattern}",
@@ -492,6 +604,30 @@ def _clean_browsers(
                                 "count": 1,
                                 "paths": [str(match)],
                             })
+        if "cache" in clean_categories:
+            vendor_cache = BROWSER_CACHE_DIRS.get(name)
+            if vendor_cache and vendor_cache.exists():
+                s = dir_size(vendor_cache)
+                if s > 0:
+                    results.append({
+                        "name": f"{name.title()} - cache/{vendor_cache.name}",
+                        "size": s,
+                        "count": 1,
+                        "paths": [str(vendor_cache)],
+                    })
+            if name == "safari":
+                for cache_path in SAFARI_EXTRA.get("cache", []):
+                    if cache_path.exists():
+                        s = dir_size(cache_path)
+                        if s > 0:
+                            results.append({
+                                "name": f"Safari - cache/{cache_path.name}",
+                                "size": s,
+                                "count": 1,
+                                "paths": [str(cache_path)],
+                            })
+    if "firefox" in targets or "safari" in targets:
+        console.print("[dim]Note: Firefox/Safari use their own layouts -- only their cache dirs are handled; cookies/history are not.[/]")
 
     total = sum(r["size"] for r in results)
     table = Table(title="Browser Cleanup", border_style="blue")
@@ -514,9 +650,12 @@ def _clean_browsers(
 def _scan_app_caches() -> list[dict]:
     results = []
     for key, info in APP_CLEANERS.items():
+        if info.get("risky"):
+            continue  # non-regenerable data: only via explicit --module
         path = info["path"]
         if path.exists():
-            s = dir_size(path) if path.is_dir() else (path.stat().st_size if path.is_file() else 0)
+            st = safe_stat(path)
+            s = dir_size(path) if path.is_dir() else (st.st_size if st else 0)
             if s > 0:
                 results.append({
                     "name": info["name"],
@@ -572,10 +711,13 @@ def _clean_module(module_name: str, scan_only: bool = False, permanent: bool = F
         if not path.exists():
             console.print(f"[yellow]{info['name']} not found at {path}[/]")
             return
-        s = dir_size(path)
+        st = safe_stat(path)
+        s = dir_size(path) if path.is_dir() else (st.st_size if st else 0)
         console.print(f"[cyan]{info['name']}:[/] {format_size(s)}")
         if scan_only or s == 0:
             return
+        if info.get("risky"):
+            console.print(f"[yellow bold]WARNING: {info['name']} contains non-regenerable data.[/]")
         if confirm_action(f"Clean {format_size(s)}?", force_yes=force_yes):
             _trash_or_rm(path, permanent)
             console.print(f"[green]Cleaned {info['name']} ({format_size(s)})[/]")
@@ -594,24 +736,49 @@ def _clean_module(module_name: str, scan_only: bool = False, permanent: bool = F
 # ── Special cleaners ────────────────────────────────────────────────────
 
 def _clean_clipboard():
-    run_cmd(["pbcopy"], timeout=2)  # pipe empty to clipboard
-    os.popen("echo -n '' | pbcopy")
-    console.print("[green]Clipboard cleared.[/]")
-    log_action("clean_clipboard")
+    try:
+        subprocess.run(["pbcopy"], input=b"", timeout=5)
+        console.print("[green]Clipboard cleared.[/]")
+        log_action("clean_clipboard")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        console.print(f"[red]Could not clear clipboard: {e}[/]")
+
+
+# Modern macOS (10.13+) stores recents here, not in com.apple.recentitems
+_SHAREDFILELIST_DIR = Path.home() / "Library/Application Support/com.apple.sharedfilelist"
+_RECENT_SFL_PREFIXES = (
+    "com.apple.LSSharedFileList.RecentDocuments",
+    "com.apple.LSSharedFileList.RecentApplications",
+    "com.apple.LSSharedFileList.RecentHosts",
+    "com.apple.LSSharedFileList.RecentServers",
+)
 
 
 def _clean_recent_items(force_yes: bool = False):
+    if not confirm_action("Clear macOS recent items lists?", force_yes=force_yes):
+        return
     console.print("[cyan]Clearing recent items...[/]")
+    cleared = 0
+    if _SHAREDFILELIST_DIR.exists():
+        for f in _SHAREDFILELIST_DIR.iterdir():
+            if f.is_file() and f.name.startswith(_RECENT_SFL_PREFIXES) and f.suffix in (".sfl2", ".sfl3"):
+                if _trash_or_rm(f):
+                    cleared += 1
+                    console.print(f"  [green]Cleared {f.name}[/]")
+    # Legacy prefs domains (pre-10.13, harmless if absent)
     commands = [
-        (["defaults", "delete", "com.apple.recentitems"], "Recent Items"),
+        (["defaults", "delete", "com.apple.recentitems"], "Recent Items (legacy)"),
         (["defaults", "delete", "com.apple.finder", "FXRecentFolders"], "Finder Recent Folders"),
     ]
     for cmd, name in commands:
         out, err, rc = run_cmd(cmd)
         if rc == 0:
+            cleared += 1
             console.print(f"  [green]Cleared {name}[/]")
         else:
             console.print(f"  [dim]{name}: nothing to clear[/]")
+    if cleared:
+        console.print("[dim]Restart Finder (killall Finder) for menus to refresh.[/]")
     log_action("clean_recent")
 
 
@@ -627,7 +794,7 @@ def _setup_schedule():
     <string>com.macmon.autoclean</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{Path.home()}/.macmon/venv/bin/python</string>
+        <string>{sys.executable}</string>
         <string>{macmon_path}</string>
         <string>clean</string>
         <string>--all</string>
@@ -650,8 +817,13 @@ def _setup_schedule():
 </plist>
 """
     plist_path.parent.mkdir(parents=True, exist_ok=True)
+    if plist_path.exists():
+        run_cmd(["launchctl", "unload", str(plist_path)])
     plist_path.write_text(plist_content)
-    run_cmd(["launchctl", "load", str(plist_path)])
+    out, err, rc = run_cmd(["launchctl", "load", str(plist_path)])
+    if rc != 0:
+        console.print(f"[red]launchctl load failed: {err.strip()}[/]")
+        return
     console.print(f"[green]Auto-clean scheduled (weekly Sunday 3AM)[/]")
     console.print(f"[dim]Plist: {plist_path}[/]")
     log_action("schedule_clean", str(plist_path))

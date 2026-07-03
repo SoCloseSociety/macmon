@@ -1,5 +1,6 @@
 """Network security, malware detection, and remote connection monitor for macmon."""
 
+import ipaddress
 import json
 import os
 import re
@@ -33,11 +34,14 @@ SUSPICIOUS_PORTS = {
     31337: "Back Orifice",
     12345: "NetBus trojan",
     27374: "SubSeven trojan",
-    65535: "Suspicious high port",
 }
 
+# pf anchor under Apple's wildcard anchor ("com.apple/*" in /etc/pf.conf)
+# so macmon rules are evaluated without ever replacing the main ruleset.
+PF_ANCHOR = "com.apple/250.macmon"
+
 SUSPICIOUS_REMOTE_IPS = {
-    # Known malicious ranges — placeholder patterns
+    # Known malicious ranges -- placeholder patterns
 }
 
 KNOWN_REMOTE_TOOLS = [
@@ -57,7 +61,6 @@ SUSPICIOUS_PROCESS_NAMES = [
 SUSPICIOUS_EXACT_NAMES = {"nc"}
 
 LAUNCHD_SUSPICIOUS_PATTERNS = [
-    r"^[a-z]{8,}$",  # Random lowercase string
     r"^\d+$",  # Numeric only
     r"tmp|temp|cache|hidden|\.hidden",
 ]
@@ -282,7 +285,25 @@ def _full_security_scan(json_out: bool = False):
 
 # ── Individual checks ────────────────────────────────────────────────────
 
+SOCKETFILTERFW = "/usr/libexec/ApplicationFirewall/socketfilterfw"
+
+
 def _check_firewall() -> dict:
+    if Path(SOCKETFILTERFW).exists():
+        out, _, rc = run_cmd([SOCKETFILTERFW, "--getglobalstate"], timeout=5)
+        if rc == 0 and out.strip():
+            low = out.lower()
+            if "disabled" in low or "state = 0" in low:
+                return {
+                    "name": "macOS Firewall", "status": "fail",
+                    "detail": "DISABLED",
+                    "fix_hint": "Enable: System Settings > Network > Firewall > ON",
+                }
+            if "enabled" in low or "state = 1" in low or "state = 2" in low:
+                return {"name": "macOS Firewall", "status": "pass", "detail": out.strip().splitlines()[0], "fix_hint": ""}
+        return {"name": "macOS Firewall", "status": "warn", "detail": "Could not determine status"}
+
+    # Fallback: legacy plist (only if socketfilterfw binary is missing)
     out, _, rc = run_cmd(["defaults", "read", "/Library/Preferences/com.apple.alf", "globalstate"], timeout=5)
     if rc == 0:
         state = out.strip()
@@ -305,7 +326,7 @@ def _check_sip() -> dict:
         else:
             return {
                 "name": "System Integrity Protection", "status": "fail",
-                "detail": "DISABLED — your system is vulnerable",
+                "detail": "DISABLED -- your system is vulnerable",
                 "fix_hint": "Boot to Recovery > Terminal > csrutil enable",
             }
     return {"name": "System Integrity Protection", "status": "warn", "detail": "Could not check"}
@@ -328,49 +349,76 @@ def _check_gatekeeper() -> dict:
 def _check_filevault() -> dict:
     out, _, rc = run_cmd(["fdesetup", "status"], timeout=5)
     if rc == 0:
-        if "on" in out.lower():
+        if re.search(r"FileVault is On", out):
             return {"name": "FileVault Encryption", "status": "pass", "detail": "Enabled"}
         else:
             return {
                 "name": "FileVault Encryption", "status": "fail",
-                "detail": "DISABLED — disk not encrypted",
+                "detail": "DISABLED -- disk not encrypted",
                 "fix_hint": "Enable: System Settings > Privacy & Security > FileVault > ON",
             }
     return {"name": "FileVault Encryption", "status": "warn", "detail": "Could not check"}
+
+
+def _parse_lsof_line(line: str):
+    """Parse an `lsof +c 0 -i` line into (process, pid, user, name_col, state).
+
+    Anchors on the IPv4/IPv6 TYPE column so command names containing
+    spaces (possible with +c 0) do not shift the fields.
+    """
+    parts = line.split()
+    for i, tok in enumerate(parts):
+        if tok in ("IPv4", "IPv6") and i >= 4:
+            # Fields after TYPE: DEVICE, SIZE/OFF, NODE, NAME, [STATE]
+            process = " ".join(parts[:i - 3])
+            pid = parts[i - 3]
+            user = parts[i - 2]
+            name_col = parts[i + 4] if len(parts) > i + 4 else ""
+            state = parts[i + 5] if len(parts) > i + 5 else ""
+            return process, pid, user, name_col, state
+    return None
+
+
+def _suspicious_port_hit(name_col: str, state: str):
+    """Return (port, desc) if a REMOTE port of an outbound connection or a
+    LOCAL listening port is in SUSPICIOUS_PORTS, else None."""
+    match = re.search(r'->\S+:(\d+)$', name_col)
+    if match:
+        # Outbound connection -- check the remote port only
+        remote_port = int(match.group(1))
+        if remote_port in SUSPICIOUS_PORTS:
+            return remote_port, SUSPICIOUS_PORTS[remote_port]
+        return None
+    if "LISTEN" in state:
+        match = re.search(r':(\d+)$', name_col)
+        if match:
+            local_port = int(match.group(1))
+            if local_port in SUSPICIOUS_PORTS:
+                return local_port, SUSPICIOUS_PORTS[local_port]
+    return None
 
 
 def _find_suspicious_connections() -> list[str]:
     suspicious = []
 
     # Use lsof for connection scanning (no root needed)
-    out, _, rc = run_cmd(["lsof", "-i", "-n", "-P"], timeout=15)
+    out, _, rc = run_cmd(["lsof", "+c", "0", "-i", "-n", "-P"], timeout=15)
     if rc != 0:
         return suspicious
 
     for line in out.splitlines()[1:]:  # Skip header
-        parts = line.split()
-        if len(parts) < 9:
+        parsed = _parse_lsof_line(line)
+        if not parsed:
             continue
+        process, pid, _, name_col, state = parsed
 
-        process = parts[0]
-        pid = parts[1]
-        name_col = parts[8] if len(parts) > 8 else ""
-
-        # Check for suspicious ports
-        for port, desc in SUSPICIOUS_PORTS.items():
-            if f":{port}" in name_col:
-                suspicious.append(f"PID {pid} ({process}) connected on port {port} ({desc})")
-
-        # Check for ESTABLISHED connections to unusual ports
-        if "ESTABLISHED" in line or "->":
-            # Extract remote port
-            match = re.search(r'->[\w\.]+:(\d+)', name_col)
-            if match:
-                remote_port = int(match.group(1))
-                if remote_port in SUSPICIOUS_PORTS:
-                    suspicious.append(
-                        f"PID {pid} ({process}) -> port {remote_port} ({SUSPICIOUS_PORTS[remote_port]})"
-                    )
+        hit = _suspicious_port_hit(name_col, state)
+        if hit:
+            port, desc = hit
+            if "LISTEN" in state:
+                suspicious.append(f"PID {pid} ({process}) listening on port {port} ({desc})")
+            else:
+                suspicious.append(f"PID {pid} ({process}) -> port {port} ({desc})")
 
     return suspicious
 
@@ -414,7 +462,7 @@ def _find_suspicious_processes() -> list[str]:
             cmdline = p.info.get("cmdline") or []
             cmd_str = " ".join(str(c) for c in cmdline).lower()
             if any(kw in cmd_str for kw in ["stratum+tcp", "xmrig", "minerd", "cryptonight", "monero"]):
-                found.append(f"PID {p.info['pid']}: Possible crypto miner — {p.info['name']}")
+                found.append(f"PID {p.info['pid']}: Possible crypto miner -- {p.info['name']}")
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     return found
@@ -435,7 +483,7 @@ def _find_suspicious_launch_items() -> list[str]:
             label = plist.stem
             # Check for suspicious patterns
             for pattern in LAUNCHD_SUSPICIOUS_PATTERNS:
-                if re.match(pattern, label.lower()):
+                if re.search(pattern, label.lower()):
                     suspicious.append(f"{plist}: matches suspicious pattern")
                     break
 
@@ -461,16 +509,24 @@ def _find_suspicious_launch_items() -> list[str]:
     return suspicious
 
 
+def _service_active(label: str, port: int) -> bool:
+    """Detect a system daemon via `launchctl print system/<label>` (launchctl
+    list cannot see system daemons) with a listening-port check as fallback."""
+    _, _, rc = run_cmd(["launchctl", "print", f"system/{label}"], timeout=5)
+    if rc == 0:
+        return True
+    out, _, rc = run_cmd(["lsof", "+c", "0", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"], timeout=5)
+    return rc == 0 and bool(out.strip())
+
+
 def _check_sharing() -> dict:
     out, _, rc = run_cmd(["defaults", "read", "/Library/Preferences/com.apple.RemoteManagement", "ARD_AllLocalUsers"], timeout=5)
     remote_mgmt = rc == 0 and out.strip() == "1"
 
-    out, _, rc = run_cmd(["launchctl", "list", "com.apple.screensharing"], timeout=5)
-    screen_sharing = rc == 0
+    screen_sharing = _service_active("com.apple.screensharing", 5900)
 
     # Check file sharing
-    out, _, rc = run_cmd(["launchctl", "list", "com.apple.smbd"], timeout=5)
-    file_sharing = rc == 0
+    file_sharing = _service_active("com.apple.smbd", 445)
 
     services = []
     if remote_mgmt:
@@ -492,8 +548,7 @@ def _check_sharing() -> dict:
 
 def _check_ssh_security() -> dict:
     # Check if SSH is enabled
-    out, _, rc = run_cmd(["launchctl", "list", "com.openssh.sshd"], timeout=5)
-    ssh_running = rc == 0
+    ssh_running = _service_active("com.openssh.sshd", 22)
 
     issues = []
     if ssh_running:
@@ -536,7 +591,7 @@ def _check_ssh_security() -> dict:
 def _scan_connections(json_out: bool = False):
     console.print(Panel("[bold]macmon security --connections[/] -- Live Connection Audit", border_style="red"))
 
-    out, _, rc = run_cmd(["lsof", "-i", "-n", "-P"], timeout=15)
+    out, _, rc = run_cmd(["lsof", "+c", "0", "-i", "-n", "-P"], timeout=15)
     if rc != 0:
         console.print("[yellow]Could not scan connections. Try with sudo.[/]")
         return
@@ -550,33 +605,26 @@ def _scan_connections(json_out: bool = False):
 
     connections = []
     for line in out.splitlines()[1:]:
-        parts = line.split()
-        if len(parts) < 9:
+        parsed = _parse_lsof_line(line)
+        if not parsed:
             continue
+        process, pid, user, conn_info, state = parsed
 
-        process = parts[0]
-        pid = parts[1]
-        user = parts[2]
-        conn_info = parts[8] if len(parts) > 8 else ""
-        state = parts[9] if len(parts) > 9 else ""
-
-        # Assess risk
+        # Assess risk (whitelist applies only when no suspicious-port match)
         risk = "[green]LOW[/]"
         risk_level = "low"
-        for port, desc in SUSPICIOUS_PORTS.items():
-            if f":{port}" in conn_info:
-                risk = "[red]HIGH[/]"
-                risk_level = "high"
-                break
-
-        if process.lower() in SAFE_LISTENERS:
+        if _suspicious_port_hit(conn_info, state):
+            risk = "[red]HIGH[/]"
+            risk_level = "high"
+        elif process.lower() in SAFE_LISTENERS:
             risk = "[green]SAFE[/]"
             risk_level = "safe"
-
-        for tool in KNOWN_REMOTE_TOOLS:
-            if tool in process.lower():
-                risk = "[yellow]MED[/]"
-                risk_level = "medium"
+        else:
+            for tool in KNOWN_REMOTE_TOOLS:
+                if tool in process.lower():
+                    risk = "[yellow]MED[/]"
+                    risk_level = "medium"
+                    break
 
         full_conn = f"{conn_info} {state}".strip()
         table.add_row(process[:18], pid, user[:10], full_conn[:45], risk)
@@ -596,6 +644,15 @@ def _scan_connections(json_out: bool = False):
         console.print_json(json.dumps(connections, default=str))
 
 
+def _binary_untrusted(path: Path) -> bool:
+    """True if a binary fails codesign verification or carries the quarantine xattr."""
+    _, _, rc = run_cmd(["codesign", "-dv", str(path)], timeout=5)
+    if rc != 0:
+        return True
+    out, _, rc = run_cmd(["xattr", "-p", "com.apple.quarantine", str(path)], timeout=5)
+    return rc == 0 and bool(out.strip())
+
+
 def _scan_malware(json_out: bool = False):
     console.print(Panel("[bold]macmon security --malware[/] -- Malware Scan", border_style="red"))
 
@@ -609,16 +666,24 @@ def _scan_malware(json_out: bool = False):
 
     # Check for crypto miners
     console.print("[cyan]Checking for crypto miners...[/]")
-    for p in psutil.process_iter(["pid", "name", "cpu_percent"]):
+    procs = []
+    for p in psutil.process_iter(["pid", "name"]):
         try:
-            if (p.info.get("cpu_percent") or 0) > 80:
+            p.cpu_percent(None)  # Prime the measurement
+            procs.append(p)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    time.sleep(1)
+    for p in procs:
+        try:
+            if p.cpu_percent(None) > 80:
                 # High CPU could be a miner
                 cmdline = p.cmdline()
                 cmd_str = " ".join(cmdline).lower()
                 if any(kw in cmd_str for kw in ["stratum", "xmrig", "mining", "monero", "cryptonight"]):
                     findings.append({
                         "type": "crypto_miner",
-                        "detail": f"PID {p.info['pid']}: {p.info['name']} — possible crypto miner",
+                        "detail": f"PID {p.pid}: {p.name()} -- possible crypto miner",
                         "severity": "critical",
                     })
         except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -634,14 +699,20 @@ def _scan_malware(json_out: bool = False):
     for base in sus_paths:
         if not base.exists():
             continue
+        checked = 0
         try:
             for f in base.iterdir():
+                if checked >= 20:
+                    break
                 if f.is_file() and os.access(f, os.X_OK) and f.suffix not in (".sh", ".py", ".rb"):
-                    findings.append({
-                        "type": "suspicious_binary",
-                        "detail": f"Executable in {base}: {f.name}",
-                        "severity": "medium",
-                    })
+                    checked += 1
+                    # Only flag if unsigned or quarantined (avoids build-artifact noise)
+                    if _binary_untrusted(f):
+                        findings.append({
+                            "type": "suspicious_binary",
+                            "detail": f"Executable in {base}: {f.name} (unsigned or quarantined)",
+                            "severity": "medium",
+                        })
         except (OSError, PermissionError):
             continue
 
@@ -690,13 +761,11 @@ def _scan_remote_access(json_out: bool = False):
             results.append({"type": "Installed App", "detail": app_name, "risk": "low"})
 
     # Check SSH
-    out, _, rc = run_cmd(["launchctl", "list", "com.openssh.sshd"], timeout=5)
-    if rc == 0:
+    if _service_active("com.openssh.sshd", 22):
         results.append({"type": "Service", "detail": "SSH daemon running", "risk": "medium"})
 
     # Check Screen Sharing
-    out, _, rc = run_cmd(["launchctl", "list", "com.apple.screensharing"], timeout=5)
-    if rc == 0:
+    if _service_active("com.apple.screensharing", 5900):
         results.append({"type": "Service", "detail": "Screen Sharing enabled", "risk": "medium"})
 
     # Check VNC
@@ -728,12 +797,17 @@ def _show_firewall():
     console.print(f"  Status: {fw['detail']}")
 
     # Show stealth mode
-    out, _, rc = run_cmd(["defaults", "read", "/Library/Preferences/com.apple.alf", "stealthenabled"], timeout=5)
-    stealth = out.strip() == "1" if rc == 0 else False
+    if Path(SOCKETFILTERFW).exists():
+        out, _, rc = run_cmd([SOCKETFILTERFW, "--getstealthmode"], timeout=5)
+        low = out.lower() if rc == 0 else ""
+        stealth = bool(low.strip()) and "disabled" not in low and ("enabled" in low or "state = 1" in low or " on" in low)
+    else:
+        out, _, rc = run_cmd(["defaults", "read", "/Library/Preferences/com.apple.alf", "stealthenabled"], timeout=5)
+        stealth = out.strip() == "1" if rc == 0 else False
     console.print(f"  Stealth Mode: {'[green]Enabled[/]' if stealth else '[yellow]Disabled[/]'}")
 
     # Show app firewall rules
-    out, _, rc = run_cmd(["/usr/libexec/ApplicationFirewall/socketfilterfw", "--listapps"], timeout=10)
+    out, _, rc = run_cmd([SOCKETFILTERFW, "--listapps"], timeout=10)
     if rc == 0:
         console.print("\n[bold]Application Rules:[/]")
         for line in out.splitlines():
@@ -748,32 +822,65 @@ def _show_firewall():
     console.print("\n[dim]Manage: System Settings > Network > Firewall > Options[/]")
 
 
+def _valid_ip(ip: str) -> bool:
+    """Validate an IP address or CIDR network (rejects pf rule injection)."""
+    try:
+        ipaddress.ip_address(ip)
+        return True
+    except ValueError:
+        pass
+    try:
+        ipaddress.ip_network(ip, strict=False)
+        return True
+    except ValueError:
+        return False
+
+
+def _rule_ips(line: str) -> set:
+    """Extract the IP tokens from a pf rule line for exact matching."""
+    ips = set()
+    tokens = line.split()
+    for i, tok in enumerate(tokens):
+        if tok in ("from", "to") and i + 1 < len(tokens):
+            nxt = tokens[i + 1]
+            if nxt != "any":
+                ips.add(nxt)
+    return ips
+
+
 def _block_ip(ip: str):
+    if not _valid_ip(ip):
+        console.print(f"[red]Invalid IP address or network: {ip}[/]")
+        return
+
     console.print(f"[red]Blocking IP: {ip}[/]")
-    # Use pfctl to add a block rule
+    # Add block rules to macmon's dedicated pf anchor
     rule = f"block drop from {ip} to any\nblock drop from any to {ip}\n"
     anchor_file = Path.home() / ".macmon/blocked_ips.conf"
     anchor_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # Append rule
+    # Append rule (exact IP match, not substring)
     existing = anchor_file.read_text() if anchor_file.exists() else ""
-    if ip in existing:
+    if any(ip in _rule_ips(l) for l in existing.splitlines()):
         console.print(f"[yellow]IP {ip} is already blocked.[/]")
         return
 
     anchor_file.write_text(existing + rule)
 
-    # Load rules
+    # Load rules into the macmon anchor (never replaces the main ruleset)
     _, err, rc = run_cmd(
-        ["pfctl", "-f", str(anchor_file)],
+        ["pfctl", "-a", PF_ANCHOR, "-f", str(anchor_file)],
         sudo=True, timeout=10,
     )
     if rc == 0:
-        console.print(f"[green]Blocked {ip} via pf firewall.[/]")
+        console.print(f"[green]Blocked {ip} via pf firewall (anchor {PF_ANCHOR}).[/]")
+        info, _, info_rc = run_cmd(["pfctl", "-s", "info"], sudo=True, timeout=5)
+        if info_rc == 0 and "Status: Enabled" not in info:
+            console.print("[yellow]pf is currently disabled -- the rule will not take effect until you run: sudo pfctl -E[/]")
         log_action("security_block_ip", ip)
     else:
-        console.print(f"[yellow]Rule saved to {anchor_file}. Load manually: sudo pfctl -f {anchor_file}[/]")
-        console.print(f"[dim]Enable pf: sudo pfctl -e[/]")
+        console.print(f"[yellow]Rule saved to {anchor_file}. Load manually: sudo pfctl -a {PF_ANCHOR} -f {anchor_file}[/]")
+        console.print(f"[dim]Enable pf: sudo pfctl -E[/]")
 
 
 def _unblock_ip(ip: str):
@@ -783,64 +890,101 @@ def _unblock_ip(ip: str):
         return
 
     lines = anchor_file.read_text().splitlines()
-    new_lines = [l for l in lines if ip not in l]
-    anchor_file.write_text("\n".join(new_lines) + "\n")
+    new_lines = [l for l in lines if ip not in _rule_ips(l)]
+    if len(new_lines) == len(lines):
+        console.print(f"[yellow]IP {ip} is not in the block list.[/]")
+        return
+    content = "\n".join(new_lines).strip()
+    anchor_file.write_text(content + "\n" if content else "")
 
-    run_cmd(["pfctl", "-f", str(anchor_file)], sudo=True, timeout=10)
+    if content:
+        run_cmd(["pfctl", "-a", PF_ANCHOR, "-f", str(anchor_file)], sudo=True, timeout=10)
+    else:
+        run_cmd(["pfctl", "-a", PF_ANCHOR, "-F", "rules"], sudo=True, timeout=10)
     console.print(f"[green]Unblocked {ip}.[/]")
     log_action("security_unblock_ip", ip)
 
 
 def _quarantine_process(target: str):
     """Kill process + block its network access."""
+    matches = []
     try:
         pid = int(target)
-        p = psutil.Process(pid)
-    except (ValueError, psutil.NoSuchProcess):
-        # Search by name
+        matches.append(psutil.Process(pid))
+    except psutil.NoSuchProcess:
+        pass
+    except ValueError:
+        # Search by exact name (case-insensitive), never the current process
         for proc in psutil.process_iter(["pid", "name"]):
             try:
-                if target.lower() in proc.info["name"].lower():
-                    p = proc
-                    pid = proc.info["pid"]
-                    break
+                if proc.info["pid"] == os.getpid():
+                    continue
+                if (proc.info["name"] or "").lower() == target.lower():
+                    matches.append(proc)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-        else:
-            console.print(f"[yellow]Process '{target}' not found.[/]")
-            return
 
-    name = p.name()
-    if confirm_action(f"Quarantine {name} (PID {pid})? This will kill it and block its binary."):
-        # Get binary path
-        try:
-            exe = p.exe()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            exe = ""
+    if not matches:
+        console.print(f"[yellow]Process '{target}' not found.[/]")
+        return
 
-        # Kill
-        try:
-            p.terminate()
-            time.sleep(1)
-            if p.is_running():
-                p.kill()
-            console.print(f"[green]Killed {name} (PID {pid})[/]")
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
+    if len(matches) > 1:
+        console.print(f"[yellow]{len(matches)} processes match '{target}':[/]")
+        for proc in matches:
+            try:
+                exe = proc.exe()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                exe = "?"
+            console.print(f"  [dim]PID {proc.pid}: {exe}[/]")
 
-        # Add to firewall block list if possible
-        if exe:
-            run_cmd(
-                ["/usr/libexec/ApplicationFirewall/socketfilterfw", "--add", exe],
-                sudo=True, timeout=5,
-            )
-            run_cmd(
-                ["/usr/libexec/ApplicationFirewall/socketfilterfw", "--blockapp", exe],
-                sudo=True, timeout=5,
-            )
+    for p in matches:
+        _quarantine_one(p)
+
+
+def _quarantine_one(p):
+    try:
+        name = p.name()
+        pid = p.pid
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return
+
+    if not confirm_action(f"Quarantine {name} (PID {pid})? This will kill it and block its binary."):
+        return
+
+    # Get binary path
+    try:
+        exe = p.exe()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        exe = ""
+
+    # Kill
+    try:
+        p.terminate()
+        time.sleep(1)
+        if p.is_running():
+            p.kill()
+        console.print(f"[green]Killed {name} (PID {pid})[/]")
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        pass
+
+    # Add to firewall block list if possible
+    if exe:
+        _, err1, rc1 = run_cmd(
+            [SOCKETFILTERFW, "--add", exe],
+            sudo=True, timeout=5,
+        )
+        _, err2, rc2 = run_cmd(
+            [SOCKETFILTERFW, "--blockapp", exe],
+            sudo=True, timeout=5,
+        )
+        if rc1 == 0 and rc2 == 0:
             console.print(f"[green]Blocked {exe} in application firewall.[/]")
+            console.print("[dim]Note: the macOS application firewall blocks INBOUND connections only.[/]")
+        else:
+            err = (err1 or err2 or "unknown error").strip()
+            console.print(f"[red]Failed to block {exe} in application firewall: {err}[/]")
 
-        log_action("security_quarantine", f"{name} (PID {pid})")
+    log_action("security_quarantine", f"{name} (PID {pid})")
 
 
 def _show_security_rules():

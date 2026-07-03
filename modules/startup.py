@@ -29,7 +29,7 @@ def run_startup(
     force_yes: bool = False,
 ):
     if disable:
-        _disable_item(disable)
+        _disable_item(disable, force_yes)
         return
     if enable:
         _enable_item(enable)
@@ -69,13 +69,62 @@ def _parse_plist(path: Path) -> dict:
             return {}
 
 
+def _get_loaded_labels() -> set:
+    """Labels loaded in the current user's gui domain (single launchctl call)."""
+    labels = set()
+    out, _, rc = run_cmd(["launchctl", "list"], timeout=10)
+    if rc == 0:
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 3:
+                label = parts[2].strip()
+                if label and label != "Label":
+                    labels.add(label)
+    return labels
+
+
+def _get_system_labels():
+    """Labels loaded in the system domain, or None if unreadable."""
+    out, _, rc = run_cmd(["launchctl", "print", "system"], timeout=10)
+    if rc != 0 or not out:
+        return None
+    labels = set()
+    in_services = False
+    for line in out.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("services = {"):
+            in_services = True
+            continue
+        if in_services:
+            if stripped == "}":
+                break
+            parts = stripped.split()
+            if parts:
+                labels.add(parts[-1])
+    return labels
+
+
 def _get_all_items() -> list[dict]:
     items = []
+
+    loaded_labels = _get_loaded_labels()
+    system_labels = _get_system_labels()
+
+    # Build process name -> RSS map once
+    proc_ram = {}
+    for p in psutil.process_iter(["name", "memory_info"]):
+        try:
+            pname = (p.info["name"] or "").lower()
+            if pname and pname not in proc_ram:
+                proc_ram[pname] = p.info["memory_info"].rss if p.info["memory_info"] else 0
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
 
     for category, directory in AGENT_DIRS.items():
         if not directory.exists():
             continue
         read_only = category == "macOS LaunchDaemons"
+        is_daemon = "LaunchDaemons" in category
 
         for plist_path in directory.glob("*.plist"):
             try:
@@ -89,23 +138,24 @@ def _get_all_items() -> list[dict]:
                     if args:
                         program = args[0] if isinstance(args, list) else str(args)
 
-                # Check if binary exists
-                binary_exists = Path(program).exists() if program else True
+                # Check if binary exists (only meaningful for absolute paths)
+                binary_exists = True
+                if program and program.startswith("/"):
+                    try:
+                        binary_exists = Path(program).exists()
+                    except (OSError, PermissionError):
+                        binary_exists = True
 
-                # Check if loaded/running
-                out, _, rc = run_cmd(["launchctl", "list", label], timeout=3)
-                is_loaded = rc == 0
+                # Check if loaded/running (None = unknown)
+                if is_daemon:
+                    is_loaded = (label in system_labels) if system_labels is not None else None
+                else:
+                    is_loaded = label in loaded_labels
 
                 # Check RAM if running
                 ram = 0
-                if is_loaded:
-                    for p in psutil.process_iter(["pid", "name", "memory_info"]):
-                        try:
-                            if label.lower() in p.info["name"].lower() or (program and program.split("/")[-1] in p.info["name"]):
-                                ram = p.info["memory_info"].rss if p.info["memory_info"] else 0
-                                break
-                        except (psutil.NoSuchProcess, psutil.AccessDenied):
-                            continue
+                if is_loaded and program:
+                    ram = proc_ram.get(program.split("/")[-1].lower(), 0)
 
                 items.append({
                     "label": label,
@@ -158,7 +208,9 @@ def _list_all():
         table.add_column("RAM", width=10, justify="right")
 
         for item in cat_items:
-            if item["is_loaded"]:
+            if item["is_loaded"] is None:
+                status = "[dim]-[/]"
+            elif item["is_loaded"]:
                 status = "[green]Running[/]"
             elif item["disabled"]:
                 status = "[yellow]Disabled[/]"
@@ -179,7 +231,32 @@ def _list_all():
         for item in cron_items:
             console.print(f"  {item['program']}")
 
+    # Modern login items (macOS 13+ BTM)
+    _show_btm_login_items()
+
     console.print(f"\n[dim]Total: {len(items)} startup items[/]")
+
+
+def _show_btm_login_items():
+    """Best-effort read-only view of modern (macOS 13+) login items."""
+    out, _, rc = run_cmd(["sfltool", "dumpbtm"], timeout=5)
+    names = []
+    if rc == 0 and out.strip():
+        for line in out.splitlines():
+            m = re.match(r"\s*Name:\s*(.+)", line)
+            if m:
+                name = m.group(1).strip()
+                if name and name != "(null)" and name not in names:
+                    names.append(name)
+    if names:
+        table = Table(title="Login Items (BTM)", border_style="dim")
+        table.add_column("Name", width=40)
+        table.add_column("Managed By", width=30)
+        for n in names:
+            table.add_row(n, "[dim]System Settings (read-only)[/]")
+        console.print(table)
+    else:
+        console.print("\n[dim]Note: macOS 13+ Login Items are managed in System Settings > General > Login Items and are not listed here.[/]")
 
 
 def _show_broken():
@@ -236,34 +313,71 @@ def _audit_items():
 
     for item in flagged:
         reason = "Missing binary" if not item["binary_exists"] else "Unknown vendor"
-        status = "[green]Running[/]" if item["is_loaded"] else "[dim]Stopped[/]"
+        if item["is_loaded"] is None:
+            status = "[dim]unknown[/]"
+        else:
+            status = "[green]Running[/]" if item["is_loaded"] else "[dim]Stopped[/]"
         binary = "[green]OK[/]" if item["binary_exists"] else "[red]MISSING[/]"
         table.add_row(item["label"], status, binary, reason)
 
     console.print(table)
 
 
-def _disable_item(label: str):
-    out, err, rc = run_cmd(["launchctl", "unload", "-w", _find_plist(label)], timeout=5)
+def _guard_modify(plist: str, force_yes: bool = False) -> bool:
+    """Refuse macOS-protected items; extra confirmation for system daemons."""
+    if plist.startswith("/System/"):
+        console.print(f"[red]Refusing to modify macOS system item: {plist}[/]")
+        return False
+    if plist.startswith("/Library/LaunchDaemons/"):
+        console.print(f"[yellow]System-level daemon: {plist}[/]")
+        if force_yes:
+            return True
+        return confirm_action(f"This is a system-level daemon ({plist}). Continue?")
+    return True
+
+
+def _plist_label(plist: str) -> str:
+    data = _parse_plist(Path(plist))
+    return data.get("Label") or Path(plist).stem
+
+
+def _bootout_cmd(plist: str, label: str) -> list[str]:
+    if plist.startswith("/Library/LaunchDaemons/"):
+        return ["sudo", "launchctl", "bootout", f"system/{label}"]
+    return ["launchctl", "bootout", f"gui/{_get_uid()}/{label}"]
+
+
+def _disable_item(label: str, force_yes: bool = False):
+    plist = _find_plist(label)
+    if not plist:
+        console.print(f"[yellow]Could not find plist for {label}[/]")
+        return
+    if not _guard_modify(plist, force_yes):
+        return
+    real_label = _plist_label(plist)
+    out, err, rc = run_cmd(_bootout_cmd(plist, real_label), timeout=10)
     if rc == 0:
         console.print(f"[green]Disabled {label}[/]")
         log_action("startup_disable", label)
     else:
-        # Try by label
-        run_cmd(["launchctl", "disable", f"gui/{_get_uid()}/{label}"], timeout=5)
-        console.print(f"[yellow]Attempted to disable {label}[/]")
+        console.print(f"[yellow]Could not disable {label} (rc={rc}): {err.strip()}[/]")
 
 
 def _enable_item(label: str):
     plist = _find_plist(label)
-    if plist:
-        out, err, rc = run_cmd(["launchctl", "load", "-w", plist], timeout=5)
-        if rc == 0:
-            console.print(f"[green]Enabled {label}[/]")
-            log_action("startup_enable", label)
-            return
-    run_cmd(["launchctl", "enable", f"gui/{_get_uid()}/{label}"], timeout=5)
-    console.print(f"[yellow]Attempted to enable {label}[/]")
+    if not plist:
+        console.print(f"[yellow]Could not find plist for {label}[/]")
+        return
+    if plist.startswith("/Library/LaunchDaemons/"):
+        cmd = ["sudo", "launchctl", "bootstrap", "system", plist]
+    else:
+        cmd = ["launchctl", "bootstrap", f"gui/{_get_uid()}", plist]
+    out, err, rc = run_cmd(cmd, timeout=10)
+    if rc == 0:
+        console.print(f"[green]Enabled {label}[/]")
+        log_action("startup_enable", label)
+    else:
+        console.print(f"[yellow]Could not enable {label} (rc={rc}): {err.strip()}[/]")
 
 
 def _delete_item(label: str, force_yes: bool = False):
@@ -277,10 +391,20 @@ def _delete_item(label: str, force_yes: bool = False):
         console.print(f"[yellow]Plist not found: {plist}[/]")
         return
 
+    if not _guard_modify(plist, force_yes):
+        return
+
     if confirm_action(f"Delete startup item {label} ({plist})?", force_yes=force_yes):
-        # Unload first
-        run_cmd(["launchctl", "unload", plist], timeout=5)
-        plist_path.unlink()
+        # Unload first, warn if it failed
+        real_label = _plist_label(plist)
+        out, err, rc = run_cmd(_bootout_cmd(plist, real_label), timeout=10)
+        if rc != 0:
+            console.print(f"[yellow]Warning: could not unload {real_label} (rc={rc}): {err.strip()}[/]")
+        try:
+            plist_path.unlink()
+        except (OSError, PermissionError) as e:
+            console.print(f"[red]Could not delete {plist}: {e}[/]")
+            return
         console.print(f"[green]Deleted {label}[/]")
         log_action("startup_delete", f"{label} ({plist})")
 
@@ -290,7 +414,8 @@ def _find_plist(label: str) -> str:
         if not directory.exists():
             continue
         for plist in directory.glob("*.plist"):
-            if label in plist.stem or label in plist.name:
+            # Exact filename match only (with or without .plist)
+            if label == plist.stem or label == plist.name:
                 return str(plist)
             try:
                 data = _parse_plist(plist)

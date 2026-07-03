@@ -28,6 +28,7 @@ from .utils import (
 DAEMON_PID_FILE = MACMON_DIR / "daemon.pid"
 FOCUS_SESSION_FILE = MACMON_DIR / "focus_session.json"
 AUTOPILOT_LOG = MACMON_DIR / "autopilot.log"
+MAX_AUTOPILOT_LOG_SIZE = 5 * 1024 * 1024  # 5 MB
 
 
 # ── Autopilot Daemon ─────────────────────────────────────────────────────
@@ -45,33 +46,72 @@ def run_autopilot(start: bool = False, stop: bool = False, status: bool = False,
         _show_status()
 
 
+def _is_macmon_process(pid: int) -> bool:
+    """Return True if the PID belongs to a running macmon process."""
+    try:
+        cmdline = psutil.Process(pid).cmdline()
+        return any("macmon" in part for part in cmdline)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return False
+
+
+def _read_daemon_pid():
+    """Read and verify the daemon PID file.
+
+    Returns the PID if it points at a live macmon process; otherwise
+    removes the stale file and returns None (PIDs get reused).
+    """
+    if not DAEMON_PID_FILE.exists():
+        return None
+    try:
+        pid = int(DAEMON_PID_FILE.read_text().strip())
+    except (ValueError, OSError):
+        DAEMON_PID_FILE.unlink(missing_ok=True)
+        return None
+    if psutil.pid_exists(pid) and _is_macmon_process(pid):
+        return pid
+    # Stale or reused PID -- not our daemon
+    DAEMON_PID_FILE.unlink(missing_ok=True)
+    return None
+
+
 def _start_daemon():
-    if DAEMON_PID_FILE.exists():
-        try:
-            pid = int(DAEMON_PID_FILE.read_text().strip())
-            if psutil.pid_exists(pid):
-                console.print(f"[yellow]Daemon already running (PID {pid})[/]")
-                return
-        except (ValueError, OSError):
-            pass
+    pid = _read_daemon_pid()
+    if pid is not None:
+        console.print(f"[yellow]Daemon already running (PID {pid})[/]")
+        return
 
     console.print("[cyan]Starting autopilot daemon...[/]")
 
-    # Fork to background
+    # Fork to background. NOTE: fork() is only safe because macmon is still
+    # single-threaded here -- nothing threaded or ObjC-backed may be imported
+    # before daemonizing.
     try:
         pid = os.fork()
         if pid > 0:
-            # Parent
-            DAEMON_PID_FILE.write_text(str(pid))
-            console.print(f"[green]Autopilot daemon started (PID {pid})[/]")
-            console.print(f"[dim]Log: {AUTOPILOT_LOG}[/]")
-            log_action("autopilot_start", f"PID {pid}")
+            # Parent -- the real daemon (grandchild) writes its own PID file.
+            # Wait up to ~2s for it to appear.
+            daemon_pid = None
+            for _ in range(20):
+                time.sleep(0.1)
+                if DAEMON_PID_FILE.exists():
+                    try:
+                        daemon_pid = int(DAEMON_PID_FILE.read_text().strip())
+                        break
+                    except (ValueError, OSError):
+                        pass
+            if daemon_pid:
+                console.print(f"[green]Autopilot daemon started (PID {daemon_pid})[/]")
+                console.print(f"[dim]Log: {AUTOPILOT_LOG}[/]")
+                log_action("autopilot_start", f"PID {daemon_pid}")
+            else:
+                console.print(f"[red]Daemon did not start (no PID file). Check {AUTOPILOT_LOG}[/]")
             return
     except OSError as e:
         console.print(f"[red]Failed to fork: {e}[/]")
         return
 
-    # Child process — become daemon
+    # First child -- new session, then fork again so the daemon is a grandchild
     os.setsid()
     try:
         pid = os.fork()
@@ -80,14 +120,26 @@ def _start_daemon():
     except OSError:
         sys.exit(1)
 
-    # Redirect stdout/stderr
+    # Grandchild -- the daemon. Detach from the launch directory.
+    os.chdir("/")
+
+    # Redirect stdin from /dev/null, stdout/stderr to the log
     sys.stdout.flush()
     sys.stderr.flush()
+    with open(os.devnull) as devnull:
+        os.dup2(devnull.fileno(), sys.stdin.fileno())
     with open(str(AUTOPILOT_LOG), "a") as log_file:
         os.dup2(log_file.fileno(), sys.stdout.fileno())
         os.dup2(log_file.fileno(), sys.stderr.fileno())
 
-    DAEMON_PID_FILE.write_text(str(os.getpid()))
+    # Write our own PID exclusively -- guards against concurrent double-start
+    try:
+        fd = os.open(str(DAEMON_PID_FILE), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        _autopilot_log("Another daemon already owns the PID file -- exiting")
+        sys.exit(1)
+    with os.fdopen(fd, "w") as f:
+        f.write(str(os.getpid()))
 
     # Signal handler for clean shutdown
     def _shutdown(signum, frame):
@@ -105,6 +157,8 @@ def _daemon_loop():
     cfg = load_config()
     interval = cfg.get("autopilot", {}).get("interval_seconds", 30)
 
+    _prune_autopilot_db()
+
     while True:
         try:
             cfg = load_config()
@@ -121,7 +175,6 @@ def _daemon_loop():
 
 def _evaluate_rules(cfg: dict):
     mem = psutil.virtual_memory()
-    cpu_pct = psutil.cpu_percent(interval=1)
     disk = psutil.disk_usage("/")
     disk_free_gb = disk.free / (1024**3)
 
@@ -137,31 +190,33 @@ def _evaluate_rules(cfg: dict):
     if mem.percent > 88:
         if _can_fire(db, "RAM Critical", 5):
             _autopilot_log("RAM Critical: running purge")
-            run_cmd(["purge"], sudo=True, timeout=30)
-            _record_fire(db, "RAM Critical", "purge")
-            send_notification("macmon", "RAM critical! Ran purge.", cfg.get("notifications", {}).get("style", "osascript"))
+            if _daemon_purge(db, cfg):
+                _record_fire(db, "RAM Critical", "purge", 5)
+                send_notification("macmon", "RAM critical! Ran purge.", cfg.get("notifications", {}).get("style", "osascript"))
+            else:
+                _record_fire(db, "RAM Critical", "purge failed", 5)
 
-    # Rule: Kill Zombies
+    # Rule: Kill Zombies -- nudge parents to reap, never terminate them
     if zombies > 0:
         if _can_fire(db, "Kill Zombies", 2):
-            _autopilot_log(f"Killing {zombies} zombies")
+            _autopilot_log(f"Found {zombies} zombies -- signaling parents to reap")
             for p in psutil.process_iter(["pid", "ppid", "status"]):
                 try:
                     if p.info["status"] == psutil.STATUS_ZOMBIE:
-                        try:
-                            parent = psutil.Process(p.info["ppid"])
-                            parent.terminate()
-                        except (psutil.NoSuchProcess, psutil.AccessDenied):
-                            os.kill(p.info["pid"], signal.SIGKILL)
-                except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
+                        ppid = p.info.get("ppid") or 0
+                        if ppid > 1:
+                            os.kill(ppid, signal.SIGCHLD)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError, PermissionError):
                     pass
-            _record_fire(db, "Kill Zombies", f"killed {zombies}")
+            send_notification("macmon", f"{zombies} zombies found, run `macmon sweep`", cfg.get("notifications", {}).get("style", "osascript"))
+            _record_fire(db, "Kill Zombies", f"found {zombies}, notified", 2)
 
-    # Rule: Kill Orphans
+    # Rule: Kill Orphans -- detection only, suggest `macmon sweep`
     if orphan_count > 3:
         if _can_fire(db, "Kill Orphans", 10):
-            _autopilot_log(f"Killing {orphan_count} orphans")
-            _record_fire(db, "Kill Orphans", f"found {orphan_count}")
+            _autopilot_log(f"Detected {orphan_count} orphans")
+            send_notification("macmon", f"{orphan_count} orphans detected, run `macmon sweep`", cfg.get("notifications", {}).get("style", "osascript"))
+            _record_fire(db, "Kill Orphans", f"detected {orphan_count}", 10)
 
     # Rule: Low Disk
     if disk_free_gb < 10:
@@ -169,7 +224,7 @@ def _evaluate_rules(cfg: dict):
             msg = f"Low disk! {disk_free_gb:.1f}GB free. Run `macmon gc --all`"
             _autopilot_log(msg)
             send_notification("macmon", msg, cfg.get("notifications", {}).get("style", "osascript"))
-            _record_fire(db, "Low Disk", msg)
+            _record_fire(db, "Low Disk", msg, 60)
 
     # Rule: CPU Runaway
     for p in psutil.process_iter(["pid", "name", "cpu_percent"]):
@@ -180,7 +235,7 @@ def _evaluate_rules(cfg: dict):
                         proc = psutil.Process(p.info["pid"])
                         proc.nice(15)
                         _autopilot_log(f"Reniced {p.info['name']} (PID {p.info['pid']}) to 15")
-                        _record_fire(db, f"CPU Runaway {p.info['pid']}", f"reniced {p.info['name']}")
+                        _record_fire(db, f"CPU Runaway {p.info['pid']}", f"reniced {p.info['name']}", 5)
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         pass
         except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -199,14 +254,14 @@ def _evaluate_rules(cfg: dict):
         if _can_fire(db, "Browser RAM Hog", 30):
             msg = f"Browser using {format_size(browser_ram)} RAM -- close some tabs"
             send_notification("macmon", msg, cfg.get("notifications", {}).get("style", "osascript"))
-            _record_fire(db, "Browser RAM Hog", msg)
+            _record_fire(db, "Browser RAM Hog", msg, 30)
 
     # Rule: Weekly clean reminder
     last_clean = _get_hours_since(db, "clean")
     if last_clean is None or last_clean > 168:
         if _can_fire(db, "Weekly Clean Reminder", 1440):  # Once per day max
             send_notification("macmon", "7+ days since last clean. Run `macmon clean --all`", cfg.get("notifications", {}).get("style", "osascript"))
-            _record_fire(db, "Weekly Clean Reminder", "notified")
+            _record_fire(db, "Weekly Clean Reminder", "notified", 1440)
 
     # ── Thermal Rules ───────────────────────────────────────────────────
     _evaluate_thermal_rules(db, cfg)
@@ -221,51 +276,56 @@ def _evaluate_thermal_rules(db, cfg: dict):
     """Thermal management: prevent overheating and excessive fan noise."""
     notify_style = cfg.get("notifications", {}).get("style", "osascript")
 
-    # Estimate CPU temp from load (or real temp if available)
+    # Only act on a REAL sensor reading -- a load-derived estimate would
+    # renice legitimate heavy workloads (builds, exports) on healthy machines
     cpu_pct = psutil.cpu_percent(interval=0)
-    estimated_temp = 40 + (cpu_pct / 100) * 55
+    real_temp = None
 
     try:
         import subprocess
         out = subprocess.run(["osx-cpu-temp"], capture_output=True, text=True, timeout=2)
         if out.returncode == 0:
-            estimated_temp = float(out.stdout.strip().replace("°C", "").replace("C", "").strip())
+            parsed = float(out.stdout.strip().replace("°C", "").replace("C", "").strip())
+            if parsed > 0:  # 0.0 means no sensor (Apple Silicon)
+                real_temp = parsed
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
         pass
 
-    # Rule: Thermal Critical (>92°C) — renice top CPU hogs aggressively
-    if estimated_temp > 92:
+    # Rule: Thermal Critical (>92°C) -- renice top CPU hogs aggressively
+    if real_temp is not None and real_temp > 92:
         if _can_fire(db, "Thermal Critical", 3):
-            _autopilot_log(f"THERMAL CRITICAL: {estimated_temp:.0f}°C — renicing top CPU hogs")
+            _autopilot_log(f"THERMAL CRITICAL: {real_temp:.0f}°C -- renicing top CPU hogs")
             _renice_top_cpu_hogs(priority=15, max_procs=5)
-            send_notification("macmon THERMAL", f"CPU at {estimated_temp:.0f}°C! Throttling heavy processes.", notify_style)
-            _record_fire(db, "Thermal Critical", f"{estimated_temp:.0f}°C reniced top 5")
+            send_notification("macmon THERMAL", f"CPU at {real_temp:.0f}°C! Throttling heavy processes.", notify_style)
+            _record_fire(db, "Thermal Critical", f"{real_temp:.0f}°C reniced top 5", 3)
 
-    # Rule: Thermal Warning (>82°C) — renice top hog gently
-    elif estimated_temp > 82:
+    # Rule: Thermal Warning (>82°C) -- renice top hog gently
+    elif real_temp is not None and real_temp > 82:
         if _can_fire(db, "Thermal Warning", 5):
-            _autopilot_log(f"THERMAL WARNING: {estimated_temp:.0f}°C — renicing top CPU hog")
+            _autopilot_log(f"THERMAL WARNING: {real_temp:.0f}°C -- renicing top CPU hog")
             _renice_top_cpu_hogs(priority=10, max_procs=2)
-            _record_fire(db, "Thermal Warning", f"{estimated_temp:.0f}°C reniced top 2")
+            _record_fire(db, "Thermal Warning", f"{real_temp:.0f}°C reniced top 2", 5)
 
-    # Rule: Sustained high CPU (>85% for this cycle) — purge RAM to reduce pressure
+    # Rule: Sustained high CPU (>85% for this cycle) -- purge RAM to reduce pressure
     if cpu_pct > 85:
         mem = psutil.virtual_memory()
         if mem.percent > 75:
             if _can_fire(db, "High Load Purge", 10):
-                _autopilot_log(f"High load: CPU {cpu_pct:.0f}% RAM {mem.percent:.0f}% — purging")
-                run_cmd(["purge"], sudo=True, timeout=30)
-                _record_fire(db, "High Load Purge", f"CPU {cpu_pct:.0f}% RAM {mem.percent:.0f}%")
+                _autopilot_log(f"High load: CPU {cpu_pct:.0f}% RAM {mem.percent:.0f}% -- purging")
+                if _daemon_purge(db, cfg):
+                    _record_fire(db, "High Load Purge", f"CPU {cpu_pct:.0f}% RAM {mem.percent:.0f}%", 10)
+                else:
+                    _record_fire(db, "High Load Purge", "purge failed", 10)
 
-    # Rule: Fan noise reduction — if CPU load is moderate but sustained,
+    # Rule: Fan noise reduction -- if CPU load is moderate but sustained,
     # reduce nice of background dev processes to let fans slow down
     load1, _, _ = psutil.getloadavg()
     core_count = psutil.cpu_count() or 1
     if load1 > core_count * 0.9:
         if _can_fire(db, "Fan Reduction", 10):
-            _autopilot_log(f"High load average ({load1:.1f}) — renicing background devtools")
+            _autopilot_log(f"High load average ({load1:.1f}) -- renicing background devtools")
             _renice_background_devtools()
-            _record_fire(db, "Fan Reduction", f"load {load1:.1f}")
+            _record_fire(db, "Fan Reduction", f"load {load1:.1f}", 10)
 
 
 def _renice_top_cpu_hogs(priority: int = 10, max_procs: int = 3):
@@ -320,7 +380,7 @@ def _evaluate_security_rules(db, cfg: dict):
                     msg = f"Suspicious connection to port {conn.raddr.port} ({port_desc}) -> {conn.raddr.ip}"
                     _autopilot_log(msg)
                     send_notification("macmon SECURITY", msg, notify_style)
-                    _record_fire(db, f"Suspicious Port {conn.raddr.port}", msg)
+                    _record_fire(db, f"Suspicious Port {conn.raddr.port}", msg, 10)
     except (psutil.AccessDenied, PermissionError, ImportError):
         pass
 
@@ -336,7 +396,7 @@ def _evaluate_security_rules(db, cfg: dict):
                             msg = f"Remote access tool detected: {p.info['name']} (PID {p.info['pid']})"
                             _autopilot_log(msg)
                             send_notification("macmon SECURITY", msg, notify_style)
-                            _record_fire(db, f"Remote Tool {p.info['name']}", msg)
+                            _record_fire(db, f"Remote Tool {p.info['name']}", msg, 60)
                         break
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
@@ -357,7 +417,7 @@ def _evaluate_security_rules(db, cfg: dict):
                             msg = f"Possible crypto miner: {p.info['name']} (PID {p.info['pid']}, CPU {cpu:.0f}%)"
                             _autopilot_log(msg)
                             send_notification("macmon SECURITY", msg, notify_style)
-                            _record_fire(db, f"Crypto Miner {p.info['pid']}", msg)
+                            _record_fire(db, f"Crypto Miner {p.info['pid']}", msg, 5)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
     except ImportError:
@@ -372,7 +432,7 @@ def _evaluate_security_rules(db, cfg: dict):
                     msg = f"Process running from temp dir: {p.info['name']} ({exe})"
                     _autopilot_log(msg)
                     send_notification("macmon SECURITY", msg, notify_style)
-                    _record_fire(db, f"TmpExec {p.info['pid']}", msg)
+                    _record_fire(db, f"TmpExec {p.info['pid']}", msg, 30)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
@@ -392,13 +452,42 @@ def _can_fire(db, rule_name: str, cooldown_minutes: int) -> bool:
     return True
 
 
-def _record_fire(db, rule_name: str, details: str):
-    cooldown_until = (datetime.now() + timedelta(minutes=5)).isoformat()
+def _record_fire(db, rule_name: str, details: str, cooldown_minutes: int = 5):
+    cooldown_until = (datetime.now() + timedelta(minutes=cooldown_minutes)).isoformat()
     db.execute(
         "INSERT INTO autopilot_log (rule_name, action, details, cooldown_until) VALUES (?, ?, ?, ?)",
         (rule_name, "fired", details, cooldown_until),
     )
     db.commit()
+
+
+def _daemon_purge(db, cfg: dict) -> bool:
+    """Run purge non-interactively (sudo -n). Returns True on success.
+
+    The daemon has no TTY, so a plain `sudo purge` would hang or fail
+    silently. On failure, log it and notify once per day that passwordless
+    sudo is required -- never claim success.
+    """
+    _, err, rc = run_cmd(["sudo", "-n", "purge"], timeout=30)
+    if rc == 0:
+        return True
+    _autopilot_log(f"purge failed (rc={rc}): {err.strip() or 'passwordless sudo required'}")
+    if _can_fire(db, "Purge Sudo Warning", 1440):
+        style = cfg.get("notifications", {}).get("style", "osascript")
+        send_notification("macmon", "Autopilot cannot run `purge` -- passwordless sudo required.", style)
+        _record_fire(db, "Purge Sudo Warning", "notified", 1440)
+    return False
+
+
+def _prune_autopilot_db():
+    """Prune autopilot_log rows older than 30 days (run once per daemon start)."""
+    try:
+        db = get_db()
+        db.execute("DELETE FROM autopilot_log WHERE timestamp < datetime('now', '-30 days')")
+        db.commit()
+        db.close()
+    except Exception as e:
+        _autopilot_log(f"autopilot_log prune failed: {e}")
 
 
 def _get_hours_since(db, scan_type: str):
@@ -418,6 +507,8 @@ def _get_hours_since(db, scan_type: str):
 def _autopilot_log(msg: str):
     ts = datetime.now().isoformat()
     try:
+        if AUTOPILOT_LOG.exists() and AUTOPILOT_LOG.stat().st_size > MAX_AUTOPILOT_LOG_SIZE:
+            AUTOPILOT_LOG.replace(AUTOPILOT_LOG.with_name(AUTOPILOT_LOG.name + ".1"))
         with open(AUTOPILOT_LOG, "a") as f:
             f.write(f"{ts} | {msg}\n")
     except OSError:
@@ -425,38 +516,28 @@ def _autopilot_log(msg: str):
 
 
 def _stop_daemon():
-    if not DAEMON_PID_FILE.exists():
+    pid = _read_daemon_pid()
+    if pid is None:
         console.print("[yellow]No daemon running.[/]")
         return
 
     try:
-        pid = int(DAEMON_PID_FILE.read_text().strip())
         os.kill(pid, signal.SIGTERM)
         console.print(f"[green]Stopped autopilot daemon (PID {pid})[/]")
         log_action("autopilot_stop", f"PID {pid}")
-    except (ValueError, ProcessLookupError, PermissionError):
+    except (ProcessLookupError, PermissionError):
         console.print("[yellow]Daemon process not found. Cleaning up.[/]")
 
     DAEMON_PID_FILE.unlink(missing_ok=True)
 
 
 def _show_status():
-    running = False
-    pid = None
+    pid = _read_daemon_pid()
 
-    if DAEMON_PID_FILE.exists():
-        try:
-            pid = int(DAEMON_PID_FILE.read_text().strip())
-            running = psutil.pid_exists(pid)
-        except (ValueError, OSError):
-            pass
-
-    if running:
+    if pid is not None:
         console.print(f"[green]Autopilot daemon is RUNNING (PID {pid})[/]")
     else:
         console.print("[yellow]Autopilot daemon is NOT running[/]")
-        if DAEMON_PID_FILE.exists():
-            DAEMON_PID_FILE.unlink(missing_ok=True)
 
     # Show last 10 actions
     try:
@@ -488,6 +569,25 @@ def _tail_log():
 
 # ── Focus Mode ───────────────────────────────────────────────────────────
 
+def _toggle_dnd(cfg: dict, enable: bool):
+    """Toggle Do Not Disturb via a user-configured Shortcut.
+
+    `defaults write com.apple.notificationcenterui doNotDisturb` has not
+    worked since macOS 12, so we run a Shortcuts shortcut named in config
+    (focus_mode.dnd_shortcut, default none). If none is configured or it
+    fails, hint that DND must be toggled manually -- never claim success.
+    """
+    shortcut = cfg.get("focus_mode", {}).get("dnd_shortcut", "")
+    action = "enable" if enable else "disable"
+    if shortcut:
+        _, err, rc = run_cmd(["shortcuts", "run", shortcut], timeout=10)
+        if rc == 0:
+            console.print(f"[dim]Ran DND shortcut '{shortcut}'.[/]")
+            return
+        console.print(f"[dim]DND shortcut '{shortcut}' failed: {err.strip() or 'unknown error'}[/]")
+    console.print(f"[dim]Toggle Do Not Disturb manually to {action} it (set focus_mode.dnd_shortcut in config to automate).[/]")
+
+
 def enter_focus():
     cfg = load_config()
     kill_list = cfg.get("focus_mode", {}).get("kill_on_focus", [])
@@ -497,30 +597,46 @@ def enter_focus():
 
     killed_apps = []
 
+    # Build the set of matched apps first, then quit each once
+    to_quit = []
     for p in psutil.process_iter(["pid", "name"]):
         try:
             pname = p.info["name"].lower()
+            if any(ess.lower() in pname for ess in essential):
+                continue
             for app in kill_list:
                 if app.lower() in pname:
-                    try:
-                        # Graceful quit via osascript
-                        run_cmd(["osascript", "-e", f'tell application "{app}" to quit'], timeout=5)
-                        killed_apps.append(app)
-                        console.print(f"  [yellow]Quit {app}[/]")
-                    except Exception:
-                        pass
+                    if app not in to_quit:
+                        to_quit.append(app)
                     break
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
+
+    for app in to_quit:
+        # Graceful quit via osascript; escape quotes/backslashes for AppleScript
+        safe_app = app.replace("\\", "\\\\").replace('"', '\\"')
+        _, _, rc = run_cmd(["osascript", "-e", f'tell application "{safe_app}" to quit'], timeout=5)
+        if rc == 0:
+            killed_apps.append(app)
+            console.print(f"  [yellow]Quit {app}[/]")
+        else:
+            console.print(f"  [dim]Could not quit {app}[/]")
 
     # Purge RAM
     console.print("[cyan]Purging RAM...[/]")
     run_cmd(["purge"], sudo=True, timeout=30)
 
-    # Save session
+    # Save session -- merge with any existing session so running focus
+    # twice does not destroy the restore list
+    previous = []
+    if FOCUS_SESSION_FILE.exists():
+        try:
+            previous = json.loads(FOCUS_SESSION_FILE.read_text()).get("killed_apps", [])
+        except (json.JSONDecodeError, OSError):
+            previous = []
     session = {
         "timestamp": datetime.now().isoformat(),
-        "killed_apps": list(set(killed_apps)),
+        "killed_apps": sorted(set(previous) | set(killed_apps)),
     }
     FOCUS_SESSION_FILE.write_text(json.dumps(session, indent=2))
 
@@ -540,10 +656,8 @@ def enter_focus():
     console.print("[dim]Run `macmon restore` to reopen them.[/]")
     log_action("focus", f"killed {len(set(killed_apps))} apps")
 
-    # Disable notifications
-    run_cmd(["defaults", "write", "com.apple.notificationcenterui", "doNotDisturb", "-bool", "true"])
-    run_cmd(["killall", "NotificationCenter"], timeout=5)
-    console.print("[dim]Do Not Disturb enabled.[/]")
+    # Do Not Disturb
+    _toggle_dnd(cfg, enable=True)
 
 
 def restore_focus():
@@ -565,8 +679,7 @@ def restore_focus():
         console.print(f"  [green]Reopened {app}[/]")
 
     # Re-enable notifications
-    run_cmd(["defaults", "write", "com.apple.notificationcenterui", "doNotDisturb", "-bool", "false"])
-    run_cmd(["killall", "NotificationCenter"], timeout=5)
+    _toggle_dnd(load_config(), enable=False)
 
     FOCUS_SESSION_FILE.unlink(missing_ok=True)
     console.print(f"\n[green bold]Restored {len(apps)} apps. Focus mode ended.[/]")

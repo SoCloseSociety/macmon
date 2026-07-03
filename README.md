@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/SoCloseSociety/macmon/stargazers"><img src="https://img.shields.io/github/stars/SoCloseSociety/macmon?style=flat-square&color=575ECF" alt="Stars"></a>
-  <img src="https://img.shields.io/badge/python-3.9%2B-575ECF?style=flat-square&logo=python&logoColor=white" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/python-3.11%2B-575ECF?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/macOS-12%2B-575ECF?style=flat-square&logo=apple&logoColor=white" alt="macOS 12+">
   <img src="https://img.shields.io/badge/license-MIT-575ECF?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/modules-16-575ECF?style=flat-square" alt="16 modules">
@@ -183,7 +183,7 @@ bash install.sh
 ```
 
 This will:
-1. Check Python 3.9+
+1. Check Python 3.11+
 2. Create a venv at `~/.macmon/venv`
 3. Install dependencies (`rich`, `psutil`, `typer`, `send2trash`, `xxhash`)
 4. Create `/usr/local/bin/macmon` wrapper

@@ -115,22 +115,28 @@ def _netstat_fallback(listening: bool, established: bool, process: str = None) -
         if established and status != "ESTABLISHED":
             continue
 
-        # Try to get PID from lsof for the local port
+        # Get PID directly from netstat -anv output: newer macOS prints a
+        # "process:pid" column, older releases a plain pid as the 9th field
         pid = 0
         pname = "?"
         ram = 0
-        port_match = re.search(r'\.(\d+)$', local)
-        if port_match:
-            port = port_match.group(1)
-            pid_out, _, _ = run_cmd(["lsof", "-ti", f"tcp:{port}"], timeout=2)
-            if pid_out.strip():
-                try:
-                    pid = int(pid_out.strip().splitlines()[0])
-                    p = psutil.Process(pid)
-                    pname = p.name()
-                    ram = p.memory_info().rss
-                except (ValueError, psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
+        for tok in parts[6:]:
+            m = re.search(r':(\d+)$', tok)
+            if m:
+                pid = int(m.group(1))
+                break
+        if pid == 0 and len(parts) <= 12 and len(parts) > 8:
+            try:
+                pid = int(parts[8])
+            except ValueError:
+                pid = 0
+        if pid > 0:
+            try:
+                p = psutil.Process(pid)
+                pname = p.name()
+                ram = p.memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
 
         if process and process.lower() not in pname.lower():
             continue

@@ -1,6 +1,7 @@
 """Full app uninstaller with leftover detection for macmon."""
 
 import json
+import os
 import re
 import shutil
 import signal
@@ -20,25 +21,23 @@ except ImportError:
     send2trash = None
 
 
-def _trash_or_rm(path: Path, permanent: bool = False):
+def _trash_or_rm(path: Path, permanent: bool = False) -> bool:
+    """Move to Trash (or delete permanently). Returns True if removed."""
     if permanent:
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
         else:
             path.unlink(missing_ok=True)
-    elif send2trash:
+        return True
+    if send2trash:
         try:
             send2trash(str(path))
+            return True
         except Exception:
-            if path.is_dir():
-                shutil.rmtree(path, ignore_errors=True)
-            else:
-                path.unlink(missing_ok=True)
-    else:
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-        else:
-            path.unlink(missing_ok=True)
+            console.print(f"  [yellow]Skipped (Trash unavailable): {path}[/]")
+            return False
+    console.print(f"  [yellow]Skipped (Trash unavailable): {path}[/]")
+    return False
 
 
 def run_uninstaller(
@@ -98,14 +97,32 @@ def run_uninstaller(
         freed = 0
         for l in leftovers:
             try:
-                _trash_or_rm(l["path"], permanent)
-                deleted += 1
-                freed += l["size"]
+                if _trash_or_rm(l["path"], permanent):
+                    deleted += 1
+                    freed += l["size"]
             except (OSError, PermissionError) as e:
                 console.print(f"  [red]Failed: {l['path']}: {e}[/]")
 
         console.print(f"\n[green bold]Uninstalled {app_name}: {deleted} items removed, {format_size(freed)} freed[/]")
         log_action("uninstall", f"{app_name}: {deleted} items, {format_size(freed)}")
+
+
+def _matches_app(entry_name: str, name_variants: list[str]) -> bool:
+    """Strict match: exact name, name + separator prefix, or full bundle-id.
+
+    Prefix matching requires the variant to be >= 5 chars to avoid
+    matching unrelated apps' data. Case-insensitive.
+    """
+    entry_lower = entry_name.lower()
+    if entry_lower.endswith(".plist"):
+        entry_lower = entry_lower[:-6]
+    for v in name_variants:
+        v_lower = v.lower()
+        if entry_lower == v_lower:
+            return True
+        if len(v_lower) >= 5 and entry_lower.startswith((v_lower + ".", v_lower + " ", v_lower + "-")):
+            return True
+    return False
 
 
 def _find_leftovers(app_name: str) -> list[dict]:
@@ -124,10 +141,6 @@ def _find_leftovers(app_name: str) -> list[dict]:
     bundle_id = _get_bundle_id(app_name)
     if bundle_id:
         name_variants.append(bundle_id)
-        # Extract vendor
-        parts = bundle_id.split(".")
-        if len(parts) >= 3:
-            name_variants.append(parts[-1])
 
     # Main .app bundle
     for app_dir in [Path("/Applications"), home / "Applications"]:
@@ -162,8 +175,7 @@ def _find_leftovers(app_name: str) -> list[dict]:
             continue
         try:
             for entry in base_dir.iterdir():
-                entry_lower = entry.name.lower()
-                if any(v.lower() in entry_lower for v in name_variants):
+                if _matches_app(entry.name, name_variants):
                     s = dir_size(entry) if entry.is_dir() else (entry.stat().st_size if entry.is_file() else 0)
                     leftovers.append({"type": type_name, "path": entry, "size": s})
         except (OSError, PermissionError):
@@ -179,7 +191,7 @@ def _find_leftovers(app_name: str) -> list[dict]:
             continue
         try:
             for plist in la_dir.glob("*.plist"):
-                if any(v.lower() in plist.name.lower() for v in name_variants):
+                if _matches_app(plist.name, name_variants):
                     leftovers.append({
                         "type": type_name,
                         "path": plist,
@@ -193,13 +205,25 @@ def _find_leftovers(app_name: str) -> list[dict]:
         if config_base.exists():
             try:
                 for entry in config_base.iterdir():
-                    if any(v.lower() in entry.name.lower() for v in name_variants):
+                    if _matches_app(entry.name, name_variants):
                         s = dir_size(entry) if entry.is_dir() else entry.stat().st_size
                         leftovers.append({"type": "Config", "path": entry, "size": s})
             except (OSError, PermissionError):
                 continue
 
-    return leftovers
+    # Deduplicate by resolved path
+    seen = set()
+    unique = []
+    for l in leftovers:
+        try:
+            key = str(Path(l["path"]).resolve())
+        except OSError:
+            key = str(l["path"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(l)
+
+    return unique
 
 
 def _get_bundle_id(app_name: str) -> str:
@@ -219,12 +243,37 @@ def _get_bundle_id(app_name: str) -> str:
     return ""
 
 
+def _get_bundle_executable(app_name: str) -> str:
+    for app_dir in [Path("/Applications"), Path.home() / "Applications"]:
+        app_path = app_dir / f"{app_name}.app"
+        if not app_path.exists():
+            app_path = app_dir / app_name
+        plist = app_path / "Contents/Info.plist"
+        if plist.exists():
+            out, _, rc = run_cmd(
+                ["defaults", "read", str(plist), "CFBundleExecutable"],
+                timeout=5,
+            )
+            if rc == 0 and out.strip():
+                return out.strip()
+    return ""
+
+
 def _kill_app_processes(app_name: str):
-    name_lower = app_name.lower()
+    # Exact process names only (case-insensitive): app name and its
+    # CFBundleExecutable. Never kill by substring, never kill ourselves.
+    my_pid = os.getpid()
+    targets = {app_name.lower(), app_name.lower().replace(".app", "")}
+    exe = _get_bundle_executable(app_name)
+    if exe:
+        targets.add(exe.lower())
+
     killed = 0
     for p in psutil.process_iter(["pid", "name"]):
         try:
-            if name_lower in p.info["name"].lower():
+            if p.info["pid"] == my_pid:
+                continue
+            if (p.info["name"] or "").lower() in targets:
                 p.terminate()
                 killed += 1
         except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -237,7 +286,9 @@ def _kill_app_processes(app_name: str):
         # SIGKILL stragglers
         for p in psutil.process_iter(["pid", "name"]):
             try:
-                if name_lower in p.info["name"].lower():
+                if p.info["pid"] == my_pid:
+                    continue
+                if (p.info["name"] or "").lower() in targets:
                     p.kill()
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue

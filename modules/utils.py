@@ -97,7 +97,7 @@ def format_duration(seconds: float) -> str:
     if seconds < 60:
         return f"{seconds:.0f}s"
     elif seconds < 3600:
-        return f"{seconds / 60:.0f}m {seconds % 60:.0f}s"
+        return f"{int(seconds // 60)}m {int(seconds % 60)}s"
     elif seconds < 86400:
         h = int(seconds // 3600)
         m = int((seconds % 3600) // 60)
@@ -111,16 +111,25 @@ def format_duration(seconds: float) -> str:
 def confirm_action(message: str, default: bool = False, force_yes: bool = False) -> bool:
     if force_yes:
         return True
-    return Confirm.ask(message, default=default)
+    try:
+        return Confirm.ask(message, default=default)
+    except EOFError:
+        return default
+
+
+def _applescript_escape(s: str) -> str:
+    return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def send_notification(title: str, message: str, style: str = "osascript"):
     if style == "osascript":
         try:
+            msg = _applescript_escape(message)
+            ttl = _applescript_escape(title)
             subprocess.run(
                 [
                     "osascript", "-e",
-                    f'display notification "{message}" with title "{title}"',
+                    f'display notification "{msg}" with title "{ttl}"',
                 ],
                 capture_output=True,
                 timeout=5,
@@ -156,11 +165,18 @@ def run_cmd(cmd: list[str], sudo: bool = False, timeout: int = 30) -> tuple[str,
 
 def dir_size(path: Path) -> int:
     total = 0
+    seen_links: set[tuple[int, int]] = set()  # count hardlinked files once
     try:
         for entry in path.rglob("*"):
             if entry.is_file() and not entry.is_symlink():
                 try:
-                    total += entry.stat().st_size
+                    st = entry.stat()
+                    if st.st_nlink > 1:
+                        key = (st.st_dev, st.st_ino)
+                        if key in seen_links:
+                            continue
+                        seen_links.add(key)
+                    total += st.st_size
                 except (OSError, PermissionError):
                     pass
     except (OSError, PermissionError):
