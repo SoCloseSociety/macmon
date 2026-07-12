@@ -445,5 +445,30 @@ def docker(
     )
 
 
+# ── Sentinel (ultra-light always-on monitor) ─────────────────────────────
+
+@app.command()
+def sentinel(
+    sample: bool = typer.Option(False, "--sample", help="Take one measurement (called by the agent)"),
+    install: bool = typer.Option(False, "--install", help="Arm the background sentinel (60s sampler)"),
+    uninstall: bool = typer.Option(False, "--uninstall", help="Remove the background sentinel"),
+    watch: bool = typer.Option(False, "--watch", "-w", help="Live tactical console"),
+    status: bool = typer.Option(False, "--status", help="Agent + config status"),
+    log: bool = typer.Option(False, "--log", help="Recent alerts"),
+    pause: bool = typer.Option(False, "--pause", help="Pause sampling"),
+    resume: bool = typer.Option(False, "--resume", help="Resume sampling"),
+    force_purge: bool = typer.Option(False, "--force-purge", help="Free inactive RAM now"),
+    force_clean: bool = typer.Option(False, "--force-clean", help="Scan then clean caches/temp"),
+    force_focus: bool = typer.Option(False, "--force-focus", help="Quit non-essentials + purge"),
+):
+    """MACMON-SENTINEL: ultra-light monitor + tactical console."""
+    from modules.sentinel import run_sentinel
+    run_sentinel(
+        sample=sample, install_flag=install, uninstall_flag=uninstall,
+        watch=watch, status=status, log=log, pause_flag=pause, resume_flag=resume,
+        force_purge=force_purge, force_clean_flag=force_clean, force_focus=force_focus,
+    )
+
+
 if __name__ == "__main__":
     app()

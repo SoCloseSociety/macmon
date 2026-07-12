@@ -274,6 +274,39 @@ macmon --help
 | `macmon purge` | Purge inactive RAM |
 | `macmon report` | Session report |
 | `macmon config --show / --edit` | View / edit config |
+| `macmon sentinel --install` | Arm the always-on light monitor |
+| `macmon sentinel` | Tactical console snapshot |
+| `macmon sentinel --watch` | Live tactical console |
+| `macmon sentinel --force-clean` | Manual override: scan then clean |
+
+---
+
+## MACMON-SENTINEL (always-on monitor)
+
+An ultra-light watchdog that keeps the Mac operational without you watching it.
+
+- **Near-zero cost:** a single-shot sampler fires every 60s via a LaunchAgent,
+  measures in ~0.5s, appends one compact JSON line, then exits. No resident
+  process between samples (~0.1% average CPU, ~20 MB peak per sample).
+- **Precise:** tracks CPU, RAM, swap, load, disk, network RTT, the top CPU
+  process, and the AI-agent fleet (Claude Code / codex / MCP counts + RSS) so
+  forgotten sessions are surfaced, not rediscovered in a crisis.
+- **Auto-interaction:** threshold alerts fire native macOS notifications
+  (swap high, memory pressure, runaway process, network saturated, low disk,
+  AI fleet too large), each with a cooldown. Opt-in gentle remediation
+  (`auto_purge`) can free inactive RAM automatically.
+- **Manual override:** force levers when you must push the system --
+  `--force-purge`, `--force-clean`, `--force-focus`, `--pause` / `--resume`.
+
+```bash
+macmon sentinel --install     # arm it (LaunchAgent, 60s sampler)
+macmon sentinel               # tactical snapshot with gauges + sparklines
+macmon sentinel --watch       # live console
+macmon sentinel --status      # agent + config status
+macmon sentinel --log         # recent alerts
+```
+
+Config lives in `~/.macmon/sentinel.conf` (JSON): thresholds and `auto_purge`.
 
 ---
 
