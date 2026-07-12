@@ -43,6 +43,12 @@ MONITOR_LABEL = "co.soclose.macmon.monitor"
 WEEKLY_LABEL = "co.soclose.macmon.weekly"
 MAX_BYTES = 5 * 1024 * 1024
 
+# Notifier applet -- lets macOS notifications carry the macmon icon (a bare
+# osascript notification always shows the generic Script Editor icon).
+NOTIFIER_APP = MACMON_DIR / "MacmonSentinel.app"
+NOTIFY_PAYLOAD = MACMON_DIR / ".notify_payload"
+ICNS_SRC = REPO_DIR / "assets/macmon.icns"
+
 GREEN, AMBER, RED, DIM = "bright_green", "yellow", "bright_red", "grey50"
 
 DEFAULTS = {
@@ -70,7 +76,66 @@ def _conf() -> dict:
 
 # ── Collector (single shot) ──────────────────────────────────────────────
 
+_NOTIFIER_SCRIPT = '''on deliver()
+    try
+        set p to (POSIX path of (path to home folder)) & ".macmon/.notify_payload"
+        set txt to (read (POSIX file p) as «class utf8»)
+        set AppleScript's text item delimiters to linefeed
+        set L to text items of txt
+        set t to item 1 of L
+        set AppleScript's text item delimiters to " "
+        set m to (items 2 thru -1 of L) as text
+        display notification m with title t
+    end try
+end deliver
+on run
+    deliver()
+    quit
+end run
+on reopen
+    deliver()
+    quit
+end reopen'''
+
+
+def _build_notifier():
+    """Compile a tiny AppleScript applet carrying the macmon icon so that
+    notifications show the project icon instead of the Script Editor icon."""
+    if not ICNS_SRC.exists():
+        return False
+    try:
+        import shutil
+        import tempfile
+        if NOTIFIER_APP.exists():
+            shutil.rmtree(NOTIFIER_APP)
+        with tempfile.NamedTemporaryFile("w", suffix=".applescript", delete=False) as f:
+            f.write(_NOTIFIER_SCRIPT)
+            src = f.name
+        r = subprocess.run(["osacompile", "-o", str(NOTIFIER_APP), src], capture_output=True, timeout=30)
+        os.unlink(src)
+        if r.returncode != 0:
+            return False
+        shutil.copy(ICNS_SRC, NOTIFIER_APP / "Contents/Resources/applet.icns")
+        plist = NOTIFIER_APP / "Contents/Info.plist"
+        subprocess.run(["/usr/libexec/PlistBuddy", "-c", "Set :CFBundleName macmon", str(plist)], capture_output=True)
+        subprocess.run(["/usr/libexec/PlistBuddy", "-c", "Set :CFBundleIconFile applet", str(plist)], capture_output=True)
+        NOTIFIER_APP.touch()
+        return True
+    except Exception:
+        return False
+
+
 def _notify(title: str, msg: str):
+    # Prefer the branded applet (macmon icon); fall back to plain osascript.
+    if NOTIFIER_APP.exists():
+        try:
+            t = " ".join(title.splitlines())
+            m = " ".join(msg.splitlines())
+            NOTIFY_PAYLOAD.write_text(f"{t}\n{m}")
+            subprocess.run(["open", "-a", str(NOTIFIER_APP)], capture_output=True, timeout=5)
+            return
+        except Exception:
+            pass
     t = title.replace("\\", "\\\\").replace('"', '\\"')
     m = msg.replace("\\", "\\\\").replace('"', '\\"')
     try:
@@ -418,6 +483,8 @@ def install():
     r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)], capture_output=True, text=True)
     if r.returncode == 0:
         console.print(f"[green]MACMON-SENTINEL armed[/] -- sampling every 60s (~0.1% CPU).")
+        icon = _build_notifier()
+        console.print(f"[dim]Notifications: {'branded macmon icon' if icon else 'system icon'}.[/]")
         console.print(f"[dim]View anytime: macmon sentinel   |   Live: macmon sentinel --watch[/]")
         run_sample()
     else:
@@ -451,11 +518,21 @@ def force_clean():
         _macmon("clean", "--all", "-y")
 
 
+def test_notify():
+    if not NOTIFIER_APP.exists():
+        _build_notifier()
+    _notify("macmon", "Notification de test -- icone macmon active.")
+    console.print(Text("Notification de test envoyee (avec l'icone macmon).", style=GREEN))
+
+
 def run_sentinel(sample=False, install_flag=False, uninstall_flag=False, watch=False,
                  status=False, log=False, pause_flag=False, resume_flag=False,
-                 force_purge=False, force_clean_flag=False, force_focus=False):
+                 force_purge=False, force_clean_flag=False, force_focus=False,
+                 test_notify_flag=False):
     if sample:
         run_sample()
+    elif test_notify_flag:
+        test_notify()
     elif install_flag:
         install()
     elif uninstall_flag:

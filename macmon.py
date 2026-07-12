@@ -460,6 +460,7 @@ def sentinel(
     force_purge: bool = typer.Option(False, "--force-purge", help="Free inactive RAM now"),
     force_clean: bool = typer.Option(False, "--force-clean", help="Scan then clean caches/temp"),
     force_focus: bool = typer.Option(False, "--force-focus", help="Quit non-essentials + purge"),
+    test_notify: bool = typer.Option(False, "--test-notify", help="Send a test notification with the macmon icon"),
 ):
     """MACMON-SENTINEL: ultra-light monitor + tactical console."""
     from modules.sentinel import run_sentinel
@@ -467,6 +468,7 @@ def sentinel(
         sample=sample, install_flag=install, uninstall_flag=uninstall,
         watch=watch, status=status, log=log, pause_flag=pause, resume_flag=resume,
         force_purge=force_purge, force_clean_flag=force_clean, force_focus=force_focus,
+        test_notify_flag=test_notify,
     )
 
 

@@ -324,6 +324,7 @@ macmon --help
 | `macmon sentinel` | Tactical console snapshot |
 | `macmon sentinel --watch` | Live tactical console |
 | `macmon sentinel --force-clean` | Manual override: scan then clean |
+| `macmon sentinel --test-notify` | Test notification (shows the macmon icon) |
 
 ---
 
@@ -343,6 +344,9 @@ An ultra-light watchdog that keeps the Mac operational without you watching it.
   (`auto_purge`) can free inactive RAM automatically.
 - **Manual override:** force levers when you must push the system --
   `--force-purge`, `--force-clean`, `--force-focus`, `--pause` / `--resume`.
+- **Branded notifications:** alerts pop up carrying the macmon icon (not the
+  generic Script Editor icon) via a tiny bundled notifier app. Try it with
+  `macmon sentinel --test-notify`.
 
 ```bash
 macmon sentinel --install     # arm it (LaunchAgent, 60s sampler)
