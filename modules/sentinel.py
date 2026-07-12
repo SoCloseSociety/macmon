@@ -116,10 +116,22 @@ def _build_notifier():
         if r.returncode != 0:
             return False
         shutil.copy(ICNS_SRC, NOTIFIER_APP / "Contents/Resources/applet.icns")
-        plist = NOTIFIER_APP / "Contents/Info.plist"
-        subprocess.run(["/usr/libexec/PlistBuddy", "-c", "Set :CFBundleName macmon", str(plist)], capture_output=True)
-        subprocess.run(["/usr/libexec/PlistBuddy", "-c", "Set :CFBundleIconFile applet", str(plist)], capture_output=True)
+        plist = str(NOTIFIER_APP / "Contents/Info.plist")
+
+        def _plist_set(key, value, typ="string"):
+            # osacompile applets lack some keys, so Set alone fails -> Add fallback
+            r = subprocess.run(["/usr/libexec/PlistBuddy", "-c", f"Set :{key} {value}", plist], capture_output=True)
+            if r.returncode != 0:
+                subprocess.run(["/usr/libexec/PlistBuddy", "-c", f"Add :{key} {typ} {value}", plist], capture_output=True)
+
+        _plist_set("CFBundleName", "macmon")
+        _plist_set("CFBundleIconFile", "applet")
+        _plist_set("CFBundleIdentifier", "com.macmon.app")  # canonical macmon identity
+        _plist_set("LSUIElement", "true", "bool")  # faceless helper, no Dock icon
         NOTIFIER_APP.touch()
+        # Register so the icon/identity resolve immediately (no icon-cache lag)
+        lsreg = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+        subprocess.run([lsreg, "-f", str(NOTIFIER_APP)], capture_output=True)
         return True
     except Exception:
         return False
