@@ -2,10 +2,10 @@
   <img src="https://raw.githubusercontent.com/SoCloseSociety/.github/main/assets/org-banner.svg" alt="SoClose Society" width="900">
 </p>
 
-<h1 align="center">macmon</h1>
+<h1 align="center">macmon — the free, open-source Mac cleaner &amp; system monitor for developers</h1>
 
 <p align="center">
-  <strong>Mac Developer Monitor + System Cleaner CLI — CCleaner Pro level, 100% local.</strong>
+  <strong>A terminal-native macOS system monitor, cleaner and optimizer — a free, private, open-source CCleaner alternative built for developers. 100% local, zero telemetry.</strong>
 </p>
 
 <p align="center">
@@ -13,26 +13,72 @@
   <img src="https://img.shields.io/badge/python-3.11%2B-575ECF?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/macOS-12%2B-575ECF?style=flat-square&logo=apple&logoColor=white" alt="macOS 12+">
   <img src="https://img.shields.io/badge/license-MIT-575ECF?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/modules-16-575ECF?style=flat-square" alt="16 modules">
-  <img src="https://img.shields.io/badge/commands-28%2B-575ECF?style=flat-square" alt="28+ commands">
+  <img src="https://img.shields.io/badge/modules-17-575ECF?style=flat-square" alt="17 modules">
+  <img src="https://img.shields.io/badge/commands-30%2B-575ECF?style=flat-square" alt="30+ commands">
+  <img src="https://img.shields.io/badge/telemetry-none-brightgreen?style=flat-square" alt="No telemetry">
   <img src="https://img.shields.io/badge/cost-$0-brightgreen?style=flat-square" alt="Zero Cost">
 </p>
 
 <p align="center">
   <a href="#installation">Install</a> &bull;
   <a href="#quick-start">Quick Start</a> &bull;
+  <a href="#screenshots">Screenshots</a> &bull;
+  <a href="#macmon-sentinel">Sentinel</a> &bull;
   <a href="#features">Features</a> &bull;
   <a href="#command-reference">Commands</a> &bull;
   <a href="https://soclose.co">SoClose</a>
+</p>
+
+<p align="center">
+  <img src="assets/sentinel.svg" alt="macmon sentinel — real-time tactical system monitor for macOS" width="820">
 </p>
 
 ---
 
 ## What is macmon?
 
-A **powerful terminal-based monitoring and management tool** for macOS. Think CCleaner Pro + Activity Monitor + Security Scanner + Docker Manager — all in one CLI with a beautiful live TUI dashboard.
+**macmon** is a **free, open-source Mac system monitor and cleaner** that runs entirely in your terminal. Think **CCleaner Pro + Activity Monitor + Security Scanner + Docker Manager**, reimagined as one fast CLI with a live TUI dashboard — purpose-built for developers who live in the shell.
 
-**28+ commands** · **16 modules** · **Live dashboard** · **Keyboard shortcuts that execute real actions** · **Autopilot daemon** · **Thermal management** · **Security scanner** · **100% local, zero telemetry**
+If you have ever searched for *"how to clean my Mac"*, *"free CCleaner alternative for macOS"*, *"free up disk space on Mac"*, *"why is my Mac slow"*, or *"macOS system monitor CLI"* — this is the tool, and it never phones home.
+
+**30+ commands** · **17 modules** · **Live dashboard** · **MACMON-SENTINEL always-on watchdog** · **Keyboard shortcuts that execute real actions** · **Autopilot daemon** · **Thermal management** · **Security &amp; malware scanner** · **Docker manager** · **100% local, zero telemetry**
+
+### Why developers pick macmon
+
+- **Free &amp; open source (MIT)** — no license, no account, no upsell, no cloud.
+- **Private by design** — everything runs locally; nothing is uploaded, ever.
+- **Developer-first cleanup** — reclaims `node_modules`, stale venvs, Docker cache, Xcode/DerivedData, npm/pip/brew caches with safety guards.
+- **Safe deletes** — moves to Trash by default and never silently escalates to permanent deletion.
+- **One binary of a habit** — monitor, clean, secure and keep your Mac fast from a single CLI.
+
+---
+
+## Screenshots
+
+<table>
+<tr>
+<td width="50%" valign="top" align="center">
+<strong>System health, scored /100</strong><br>
+<img src="assets/health.svg" alt="macmon health — macOS system health check with a score out of 100" width="100%">
+</td>
+<td width="50%" valign="top" align="center">
+<strong>One-pass junk &amp; cache cleaner</strong><br>
+<img src="assets/clean.svg" alt="macmon clean — free up disk space on macOS by clearing caches, logs and temp files" width="100%">
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top" align="center">
+<strong>Security &amp; malware audit</strong><br>
+<img src="assets/security.svg" alt="macmon security — macOS network security, firewall and malware indicator scan" width="100%">
+</td>
+<td width="50%" valign="top" align="center">
+<strong>Categorized process monitor</strong><br>
+<img src="assets/ps.svg" alt="macmon ps — developer process monitor for macOS grouped by category" width="100%">
+</td>
+</tr>
+</table>
+
+> Above: the **MACMON-SENTINEL** tactical console (top of page). All output is real, rendered live — no mockups.
 
 ---
 
@@ -356,7 +402,23 @@ Key sections: `dashboard`, `thresholds`, `cleaner`, `privacy`, `gc`, `focus_mode
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Free forever, for any use.
+
+## FAQ
+
+**Is macmon really free?** Yes — MIT licensed, no account, no telemetry, no paid tier.
+
+**Does it send my data anywhere?** No. Everything runs locally on your Mac. There is zero network telemetry.
+
+**Is it a CCleaner alternative for Mac?** Yes — it covers the same ground (caches, logs, temp, browser data, privacy traces) plus developer-specific cleanup (`node_modules`, venvs, Docker, Xcode) and safe Trash-first deletes.
+
+**Will it delete something important?** Deletes move to the Trash by default and never silently escalate to permanent removal. Destructive categories are opt-in.
+
+**Which macOS versions?** macOS 12 (Monterey) and newer, on Apple Silicon and Intel. Python 3.11+.
+
+---
+
+<sub><strong>Keywords:</strong> mac cleaner · macOS system monitor · clean my Mac · free CCleaner alternative macOS · free up disk space Mac · why is my Mac slow · macOS terminal system cleaner · developer Mac tools · node_modules cleaner · Docker disk cleanup Mac · macOS privacy cleaner · macOS malware scanner CLI · Activity Monitor alternative · Mac optimizer open source · Python Typer Rich TUI · zero telemetry mac utility</sub>
 
 ---
 
