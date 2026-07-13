@@ -194,7 +194,9 @@ def _top_proc():
                 best = ((p.info["name"] or "?")[:24], cpu, rss)
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
-    return best
+    # psutil per-process cpu_percent is 0..100*ncores -> normalize to system-wide 0..100% (no false alarms)
+    ncpu = psutil.cpu_count() or 1
+    return (best[0], best[1] / ncpu, best[2])
 
 
 def _rotate():
@@ -460,7 +462,11 @@ def show_status():
 # ── Manual override + lifecycle ──────────────────────────────────────────
 
 def _macmon(*args):
-    subprocess.run([str(VENV_PY), str(MACMON_PY), *args], cwd=str(REPO_DIR))
+    py = str(VENV_PY) if os.path.exists(str(VENV_PY)) else sys.executable   # .venv may be absent
+    try:
+        subprocess.run([py, str(MACMON_PY), *args], cwd=str(REPO_DIR))
+    except FileNotFoundError as e:
+        console.print(f"[red]macmon indisponible ({e})[/]")
 
 
 def _plist(label: str, program_args: list[str], interval: int) -> str:
@@ -564,6 +570,7 @@ def run_sentinel(sample=False, install_flag=False, uninstall_flag=False, watch=F
     elif force_clean_flag:
         force_clean()
     elif force_focus:
-        _macmon("focus")
+        if console.input("[bold]Quit non-essential apps + purge RAM? [y/N] [/]").strip().lower() == "y":
+            _macmon("focus")  # confirm before quitting the owner's apps (like force_clean)
     else:
         show_snapshot()

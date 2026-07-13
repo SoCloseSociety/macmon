@@ -624,7 +624,7 @@ def enter_focus():
 
     # Purge RAM
     console.print("[cyan]Purging RAM...[/]")
-    run_cmd(["purge"], sudo=True, timeout=30)
+    run_cmd(["-n", "purge"], sudo=True, timeout=30)  # sudo -n: fail fast, never hang on an invisible password prompt
 
     # Save session -- merge with any existing session so running focus
     # twice does not destroy the restore list
