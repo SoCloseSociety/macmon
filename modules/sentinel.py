@@ -30,9 +30,11 @@ from rich.table import Table
 from rich.text import Text
 
 from .utils import MACMON_DIR, console
+from .platform_compat import IS_MAC, IS_WINDOWS, OS_NAME, load_average, notify as _os_notify, require_os
 
 REPO_DIR = Path(__file__).resolve().parent.parent
-VENV_PY = REPO_DIR / ".venv/bin/python"
+# venv interpreter path differs on Windows (.venv/Scripts/python.exe)
+VENV_PY = REPO_DIR / (".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
 MACMON_PY = REPO_DIR / "macmon.py"
 
 METRICS = MACMON_DIR / "metrics.jsonl"
@@ -145,7 +147,11 @@ def _build_notifier():
 
 
 def _notify(title: str, msg: str):
-    # Prefer the branded applet (macmon icon); fall back to plain osascript.
+    # Non-macOS: use the platform notifier (PowerShell toast / notify-send).
+    if not IS_MAC:
+        _os_notify(title, msg)
+        return
+    # macOS: prefer the branded applet (macmon icon); fall back to osascript.
     if NOTIFIER_APP.exists():
         try:
             t = " ".join(title.splitlines())
@@ -281,7 +287,7 @@ def _remediate(vm, sw, cfg, astate, now, sessions, streaks):
     if not critical:
         return []
     done = []
-    if cfg.get("auto_purge") and now - astate.get("_purge", 0) > 1800:
+    if IS_MAC and cfg.get("auto_purge") and now - astate.get("_purge", 0) > 1800:
         r = subprocess.run(["sudo", "-n", "purge"], capture_output=True, timeout=60)
         if r.returncode == 0:
             astate["_purge"] = now
@@ -323,7 +329,7 @@ def run_sample():
 
     rec = {
         "ts": now, "cpu": round(cpu, 1), "ram": round(vm.percent, 1),
-        "swap_gb": round(sw.used / 1e9, 2), "load1": round(os.getloadavg()[0], 2),
+        "swap_gb": round(sw.used / 1e9, 2), "load1": round(load_average()[0], 2),
         "disk_free_gb": round(du.free / 1e9, 1),
         "claude": fleet["claude"], "codex": fleet["codex"], "mcp": fleet["mcp"],
         "top": [tname, round(tcpu, 1), trss], "rtt": rtt,
@@ -531,12 +537,29 @@ def show_log(n=20):
                         title=f"[bold]ALERT LOG (last {n})[/]", border_style=AMBER))
 
 
+def _scheduler_has(label: str) -> bool:
+    """Is a scheduled task registered? Cross-platform."""
+    try:
+        if IS_MAC:
+            out = subprocess.run(["launchctl", "list"], capture_output=True, text=True).stdout
+            return label in out
+        if IS_WINDOWS:
+            r = subprocess.run(["schtasks", "/query", "/tn", _TASK_NAME], capture_output=True, text=True)
+            return r.returncode == 0
+        out = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+        return _TASK_NAME in out
+    except FileNotFoundError:
+        return False
+
+
 def show_status():
-    out = subprocess.run(["launchctl", "list"], capture_output=True, text=True).stdout
     cfg = _conf()
+    mon_active = _scheduler_has(MONITOR_LABEL)
+    weekly_active = _scheduler_has(WEEKLY_LABEL) if IS_MAC else False
     t = Table.grid(padding=(0, 2))
-    t.add_row("Sentinel (60s sampler)", Text("ACTIVE" if MONITOR_LABEL in out else "STOPPED", style=GREEN if MONITOR_LABEL in out else RED))
-    t.add_row("Weekly health agent", Text("ACTIVE" if WEEKLY_LABEL in out else "STOPPED", style=GREEN if WEEKLY_LABEL in out else RED))
+    t.add_row("Platform", Text(OS_NAME, style=DIM))
+    t.add_row("Sentinel (60s sampler)", Text("ACTIVE" if mon_active else "STOPPED", style=GREEN if mon_active else RED))
+    t.add_row("Weekly health agent", Text("ACTIVE" if weekly_active else ("STOPPED" if IS_MAC else "macOS only"), style=GREEN if weekly_active else DIM))
     t.add_row("Auto-purge (RAM)", Text("ON" if cfg.get("auto_purge") else "OFF (notify-only)", style=GREEN if cfg.get("auto_purge") else DIM))
     t.add_row("Auto-trim idle AI sessions", Text("ON" if cfg.get("auto_trim_fleet") else "OFF", style=AMBER if cfg.get("auto_trim_fleet") else DIM))
     t.add_row("Metrics collected", Text(f"{len(_load(100000))} samples", style=DIM))
@@ -574,44 +597,79 @@ def _plist(label: str, program_args: list[str], interval: int) -> str:
 """
 
 
+_TASK_NAME = "macmon-sentinel"  # schtasks / cron identifier (Windows/Linux)
+
+
+def _sample_cmd() -> list[str]:
+    return [str(VENV_PY), str(MACMON_PY), "sentinel", "--sample"]
+
+
+def _schedule_install() -> tuple[bool, str]:
+    """Register a per-minute sampler with the OS scheduler. Returns (ok, note)."""
+    cmd = _sample_cmd()
+    if IS_MAC:
+        la_dir = Path.home() / "Library/LaunchAgents"
+        la_dir.mkdir(parents=True, exist_ok=True)
+        uid = os.getuid()
+        plist_path = la_dir / f"{MONITOR_LABEL}.plist"
+        plist_path.write_text(_plist(MONITOR_LABEL, cmd, 60))
+        subprocess.run(["launchctl", "bootout", f"gui/{uid}/{MONITOR_LABEL}"], capture_output=True)
+        r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)], capture_output=True, text=True)
+        return (r.returncode == 0, r.stderr.strip())
+    if IS_WINDOWS:
+        tr = " ".join(f'"{c}"' for c in cmd)
+        r = subprocess.run(["schtasks", "/create", "/tn", _TASK_NAME, "/tr", tr,
+                            "/sc", "minute", "/mo", "1", "/f"], capture_output=True, text=True)
+        return (r.returncode == 0, r.stderr.strip())
+    # Linux: cron (per-minute)
+    line = "* * * * * " + " ".join(cmd) + f"  # {_TASK_NAME}\n"
+    cur = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+    cur = "\n".join(l for l in cur.splitlines() if _TASK_NAME not in l)
+    new = (cur + "\n" + line).strip() + "\n"
+    r = subprocess.run(["crontab", "-"], input=new, capture_output=True, text=True)
+    return (r.returncode == 0, r.stderr.strip())
+
+
+def _schedule_remove():
+    if IS_MAC:
+        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{MONITOR_LABEL}"], capture_output=True)
+        (Path.home() / f"Library/LaunchAgents/{MONITOR_LABEL}.plist").unlink(missing_ok=True)
+    elif IS_WINDOWS:
+        subprocess.run(["schtasks", "/delete", "/tn", _TASK_NAME, "/f"], capture_output=True)
+    else:
+        cur = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+        new = "\n".join(l for l in cur.splitlines() if _TASK_NAME not in l).strip() + "\n"
+        subprocess.run(["crontab", "-"], input=new, capture_output=True, text=True)
+
+
 def install():
-    la_dir = Path.home() / "Library/LaunchAgents"
-    la_dir.mkdir(parents=True, exist_ok=True)
-    uid = os.getuid()
-    plist_path = la_dir / f"{MONITOR_LABEL}.plist"
-    plist_path.write_text(_plist(MONITOR_LABEL,
-                                 [str(VENV_PY), str(MACMON_PY), "sentinel", "--sample"], 60))
-    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{MONITOR_LABEL}"], capture_output=True)
-    r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)], capture_output=True, text=True)
-    if r.returncode == 0:
-        console.print(f"[green]MACMON-SENTINEL armed[/] -- sampling every 60s (~0.1% CPU).")
-        icon = _build_notifier()
-        console.print(f"[dim]Notifications: {'branded macmon icon' if icon else 'system icon'}.[/]")
+    ok, note = _schedule_install()
+    if ok:
+        console.print(f"[green]MACMON-SENTINEL armed[/] -- sampling every 60s (~0.1% CPU) on {OS_NAME}.")
+        if IS_MAC:
+            icon = _build_notifier()
+            console.print(f"[dim]Notifications: {'branded macmon icon' if icon else 'system icon'}.[/]")
         console.print(f"[dim]View anytime: macmon sentinel   |   Live: macmon sentinel --watch[/]")
         run_sample()
     else:
-        console.print(f"[red]Install failed: {r.stderr.strip()}[/]")
+        console.print(f"[red]Install failed: {note or 'scheduler error'}[/]")
+        console.print(f"[dim]You can still run 'macmon sentinel --sample' manually or via your own scheduler.[/]")
 
 
 def uninstall():
-    uid = os.getuid()
-    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{MONITOR_LABEL}"], capture_output=True)
-    p = Path.home() / f"Library/LaunchAgents/{MONITOR_LABEL}.plist"
-    p.unlink(missing_ok=True)
+    _schedule_remove()
     console.print("[yellow]Sentinel uninstalled.[/]")
 
 
 def pause():
-    subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{MONITOR_LABEL}"], capture_output=True)
+    _schedule_remove()
     console.print(Text("Sentinel PAUSED. Resume: macmon sentinel --resume", style=AMBER))
 
 
 def resume():
-    plist = Path.home() / f"Library/LaunchAgents/{MONITOR_LABEL}.plist"
-    if not plist.exists():
-        install(); return
-    subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], capture_output=True)
-    console.print(Text("Sentinel RESUMED (60s sampling).", style=GREEN))
+    ok, note = _schedule_install()
+    console.print(Text("Sentinel RESUMED (60s sampling)." if ok else f"Resume failed: {note}",
+                       style=GREEN if ok else RED))
 
 
 def force_clean():
@@ -631,27 +689,34 @@ def _write_conf(updates: dict):
 
 
 def _purge_nopasswd_ready() -> bool:
-    r = subprocess.run(["sudo", "-n", "purge"], capture_output=True, timeout=10)
-    return r.returncode == 0
+    if not IS_MAC:
+        return False
+    try:
+        r = subprocess.run(["sudo", "-n", "purge"], capture_output=True, timeout=10)
+        return r.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
 
 
 def enable_auto(aggressive: bool = False):
-    """Turn on auto-remediation. Level 1 (purge) is always safe; --aggressive
-    also enables closing idle AI sessions when memory is critical."""
+    """Turn on auto-remediation. Level 1 (purge, macOS) is non-destructive;
+    --aggressive also enables closing idle AI sessions when memory is critical."""
     _write_conf({"auto_purge": True, "auto_trim_fleet": bool(aggressive)})
+    purge_line = ("purge inactive RAM on memory pressure -- non-destructive.\n" if IS_MAC
+                  else f"(macOS only -- not applicable on {OS_NAME}).\n")
     console.print(Panel(
         Text.assemble(
             ("Auto-remediation ENABLED\n\n", f"bold {GREEN}"),
-            ("Level 1 (auto_purge): ", "bold white"), ("purge inactive RAM on memory pressure -- non-destructive.\n", DIM),
+            ("Level 1 (auto_purge): ", "bold white"), (purge_line, DIM),
             ("Level 2 (auto_trim_fleet): ", "bold white"),
             (f"{'ON -- closes IDLE AI sessions when RAM is critical (resumable).' if aggressive else 'OFF -- enable with --enable-auto --aggressive.'}\n", DIM),
         ),
         title="[bold]macmon sentinel[/]", border_style=GREEN))
-    if not _purge_nopasswd_ready():
+    if IS_MAC and not _purge_nopasswd_ready():
         console.print(Text("\nFor unattended purge, allow it without a password (one-time, run this):", style=AMBER))
         console.print(Text(f'  echo "{os.environ.get("USER", "$USER")} ALL=(root) NOPASSWD: /usr/sbin/purge" | sudo tee /etc/sudoers.d/macmon-purge && sudo chmod 440 /etc/sudoers.d/macmon-purge', style="bold white"))
         console.print(Text("  (without it, auto_purge is skipped -- notifications still fire.)", style=DIM))
-    else:
+    elif IS_MAC:
         console.print(Text("Passwordless purge already configured -- auto_purge is fully unattended.", style=GREEN))
 
 

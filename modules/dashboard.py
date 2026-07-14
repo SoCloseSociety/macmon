@@ -4,11 +4,21 @@ import os
 import select
 import subprocess
 import sys
-import termios
 import threading
-import tty
 import time
 from datetime import datetime
+
+# Terminal raw-mode + key polling differ by OS. termios/tty are Unix-only;
+# Windows uses msvcrt. Import defensively so the module loads on every platform.
+try:
+    import termios
+    import tty
+except ImportError:
+    termios = tty = None
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 import psutil
 from rich.align import Align
@@ -20,6 +30,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .config import load_config
+from .platform_compat import IS_MAC
 from .utils import (
     CATEGORY_EMOJI,
     categorize_process,
@@ -202,15 +213,18 @@ def _refresh_security_cache():
         findings = []
         score = 100
 
-        out, _, rc = run_cmd(["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate"], timeout=3)
-        if not (rc == 0 and "enabled" in (out or "").lower()):
-            findings.append(("[yellow]WARN[/]", "Firewall off/unknown"))
-            score -= 10
+        # Firewall + SIP are macOS-only checks; skip off-mac so they do not
+        # emit misleading "off/disabled" findings on Windows/Linux.
+        if IS_MAC:
+            out, _, rc = run_cmd(["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate"], timeout=3)
+            if not (rc == 0 and "enabled" in (out or "").lower()):
+                findings.append(("[yellow]WARN[/]", "Firewall off/unknown"))
+                score -= 10
 
-        out, _, rc = run_cmd(["csrutil", "status"], timeout=3)
-        if not ("enabled" in (out or "").lower()):
-            findings.append(("[red]FAIL[/]", "SIP disabled"))
-            score -= 15
+            out, _, rc = run_cmd(["csrutil", "status"], timeout=3)
+            if not ("enabled" in (out or "").lower()):
+                findings.append(("[red]FAIL[/]", "SIP disabled"))
+                score -= 15
 
         try:
             from .security import SUSPICIOUS_PORTS
@@ -696,9 +710,26 @@ def _build_footer(cpu: float) -> Panel:
 # ── Keyboard actions (REAL actions, not just scans) ─────────────────────
 
 def _get_key_nonblocking():
-    if select.select([sys.stdin], [], [], 0.0)[0]:
+    if msvcrt is not None:            # Windows
+        if msvcrt.kbhit():
+            try:
+                return msvcrt.getch().decode("utf-8", "ignore") or None
+            except Exception:
+                return None
+        return None
+    if select.select([sys.stdin], [], [], 0.0)[0]:  # Unix
         return sys.stdin.read(1)
     return None
+
+
+def _read_one_key():
+    """Blocking single-key read, cross-platform."""
+    if msvcrt is not None:
+        try:
+            return msvcrt.getch().decode("utf-8", "ignore")
+        except Exception:
+            return ""
+    return sys.stdin.read(1)
 
 
 def _run_action_overlay(live, action_name, action_fn):
@@ -710,7 +741,7 @@ def _run_action_overlay(live, action_name, action_fn):
     except Exception as e:
         console.print(f"[red]Error: {e}[/]")
     console.print(f"\n[dim]Press any key to return...[/]")
-    sys.stdin.read(1)
+    _read_one_key()
     live.start()
 
 
@@ -817,10 +848,17 @@ def run_dashboard(refresh: int = 2):
     _get_net_rate()
     _get_disk_rate()
 
-    old_settings = termios.tcgetattr(sys.stdin)
+    # Put the TTY in cbreak mode on Unix; Windows reads keys via msvcrt (no setup).
+    old_settings = None
+    if termios is not None and sys.stdin.isatty():
+        try:
+            old_settings = termios.tcgetattr(sys.stdin)
+        except (termios.error, ValueError):
+            old_settings = None
 
     try:
-        tty.setcbreak(sys.stdin.fileno())
+        if tty is not None and old_settings is not None:
+            tty.setcbreak(sys.stdin.fileno())
 
         with Live(console=console, refresh_per_second=2, screen=True) as live:
             while True:
@@ -908,5 +946,6 @@ def run_dashboard(refresh: int = 2):
     except KeyboardInterrupt:
         pass
     finally:
-        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+        if termios is not None and old_settings is not None:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
         console.print("\n[dim]Dashboard stopped.[/]")

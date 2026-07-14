@@ -22,6 +22,7 @@ from .utils import (
     run_cmd,
     send_notification,
 )
+from .platform_compat import require_os
 
 # ── Known suspicious indicators ──────────────────────────────────────────
 
@@ -87,6 +88,10 @@ def run_security(
     quarantine: str = None,
     json_out: bool = False,
 ):
+    msg = require_os("macOS")
+    if msg:
+        console.print(f"[yellow]{msg}[/]")
+        return
     if block_ip:
         _block_ip(block_ip)
         return

@@ -24,6 +24,7 @@ from .utils import (
     run_cmd,
     send_notification,
 )
+from .platform_compat import require_os
 
 DAEMON_PID_FILE = MACMON_DIR / "daemon.pid"
 FOCUS_SESSION_FILE = MACMON_DIR / "focus_session.json"
@@ -34,6 +35,10 @@ MAX_AUTOPILOT_LOG_SIZE = 5 * 1024 * 1024  # 5 MB
 # ── Autopilot Daemon ─────────────────────────────────────────────────────
 
 def run_autopilot(start: bool = False, stop: bool = False, status: bool = False, log: bool = False):
+    msg = require_os("macOS")
+    if msg:
+        console.print(f"[yellow]{msg}[/]")
+        return
     if start:
         _start_daemon()
     elif stop:
@@ -589,6 +594,10 @@ def _toggle_dnd(cfg: dict, enable: bool):
 
 
 def enter_focus():
+    msg = require_os("macOS")
+    if msg:
+        console.print(f"[yellow]{msg}[/]")
+        return
     cfg = load_config()
     kill_list = cfg.get("focus_mode", {}).get("kill_on_focus", [])
     essential = cfg.get("focus_mode", {}).get("essential_apps", [])
@@ -661,6 +670,10 @@ def enter_focus():
 
 
 def restore_focus():
+    msg = require_os("macOS")
+    if msg:
+        console.print(f"[yellow]{msg}[/]")
+        return
     if not FOCUS_SESSION_FILE.exists():
         console.print("[yellow]No focus session found.[/]")
         return

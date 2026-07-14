@@ -7,6 +7,7 @@ import psutil
 from rich.panel import Panel
 from rich.table import Table
 
+from .platform_compat import IS_WINDOWS, dns_flush_cmds
 from .utils import console, format_size, log_action, run_cmd
 
 
@@ -151,15 +152,24 @@ def _netstat_fallback(listening: bool, established: bool, process: str = None) -
 
 def flush_dns_cache():
     console.print("[cyan]Flushing DNS cache...[/]")
-    _, err1, rc1 = run_cmd(["dscacheutil", "-flushcache"], sudo=True)
-    _, err2, rc2 = run_cmd(["killall", "-HUP", "mDNSResponder"], sudo=True)
 
-    if rc1 == 0 and rc2 == 0:
+    # Commands are platform-specific (from platform_compat): macOS uses
+    # dscacheutil + killall mDNSResponder (need sudo), Windows uses
+    # ipconfig /flushdns (no sudo), Linux uses resolvectl flush-caches.
+    use_sudo = not IS_WINDOWS
+    ok = True
+    errors = []
+    for cmd in dns_flush_cmds():
+        _, err, rc = run_cmd(cmd, sudo=use_sudo)
+        if rc != 0:
+            ok = False
+            if err:
+                errors.append(err.strip())
+
+    if ok:
         console.print("[green]DNS cache flushed successfully.[/]")
         log_action("flush_dns")
     else:
         console.print("[yellow]DNS flush completed with warnings.[/]")
-        if err1:
-            console.print(f"  [dim]{err1.strip()}[/]")
-        if err2:
-            console.print(f"  [dim]{err2.strip()}[/]")
+        for err in errors:
+            console.print(f"  [dim]{err}[/]")

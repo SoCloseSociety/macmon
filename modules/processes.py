@@ -1,11 +1,15 @@
 """Process manager, sweep, and port management for macmon."""
 
-import fcntl
 import json
 import os
 import signal
 import time
 from pathlib import Path
+
+try:
+    import fcntl  # Unix-only (flock); absent on Windows
+except ImportError:
+    fcntl = None
 
 import psutil
 from rich.panel import Panel
@@ -268,6 +272,11 @@ def restart_app(app_name: str):
 # ── Purge RAM ────────────────────────────────────────────────────────────
 
 def purge_ram():
+    from .platform_compat import require_os
+    m = require_os("macOS")
+    if m:
+        console.print(f"[yellow]{m}[/]")
+        return
     mem_before = psutil.virtual_memory()
     console.print(f"[cyan]RAM before: {format_size(mem_before.used)} used, {format_size(mem_before.available)} available[/]")
     console.print("[yellow]Running sudo purge...[/]")
@@ -340,12 +349,14 @@ def _kill_zombies(force_yes: bool = False) -> int:
 
     if confirm_action(f"Try to reap {len(zombies)} zombie processes?", force_yes=force_yes):
         # Nudge each parent with SIGCHLD so it reaps its child; never terminate
-        # the parent, and never signal pid <= 1 (zombies themselves ignore signals)
+        # the parent, and never signal pid <= 1 (zombies themselves ignore signals).
+        # SIGCHLD is Unix-only; Windows has no zombie processes so this is a no-op.
+        sigchld = getattr(signal, "SIGCHLD", None)
         for z in zombies:
             ppid = z["ppid"] or 0
-            if ppid > 1:
+            if ppid > 1 and sigchld is not None:
                 try:
-                    os.kill(ppid, signal.SIGCHLD)
+                    os.kill(ppid, sigchld)
                 except (ProcessLookupError, PermissionError):
                     pass
         time.sleep(1)
@@ -523,6 +534,8 @@ def _lock_is_stale(f: Path) -> bool:
         return False
     if content.isdigit():
         return not psutil.pid_exists(int(content))
+    if fcntl is None:
+        return False  # cannot probe lock ownership without flock (non-Unix)
     try:
         with open(f, "rb") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)

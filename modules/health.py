@@ -12,6 +12,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .config import load_config
+from .platform_compat import IS_MAC
 from .utils import (
     REPORTS_DIR,
     console,
@@ -122,39 +123,42 @@ def _run_all_checks() -> list[dict]:
         "value": load_ratio,
     })
 
-    # Broken startup items
-    broken_startup = _check_broken_startups()
-    checks.append({
-        "name": "Broken Startup Items",
-        "status": "fail" if broken_startup > 3 else "warn" if broken_startup > 0 else "pass",
-        "detail": f"{broken_startup} broken items",
-        "fix_hint": "Run `macmon startup --broken` to review",
-        "value": broken_startup,
-    })
+    # Broken startup items (macOS only -- launchctl/LaunchAgents)
+    if IS_MAC:
+        broken_startup = _check_broken_startups()
+        checks.append({
+            "name": "Broken Startup Items",
+            "status": "fail" if broken_startup > 3 else "warn" if broken_startup > 0 else "pass",
+            "detail": f"{broken_startup} broken items",
+            "fix_hint": "Run `macmon startup --broken` to review",
+            "value": broken_startup,
+        })
 
-    # Launch Services DB
-    ls_db = Path.home() / "Library/Preferences/com.apple.LaunchServices"
-    ls_size = 0
-    if ls_db.exists():
-        ls_size = dir_size(ls_db) if ls_db.is_dir() else ls_db.stat().st_size
-    checks.append({
-        "name": "Launch Services DB",
-        "status": "warn" if ls_size > 50 * 1024 * 1024 else "pass",
-        "detail": format_size(ls_size),
-        "fix_hint": "Run `lsregister -kill -r` to rebuild",
-        "value": ls_size,
-    })
+    # Launch Services DB (macOS only)
+    if IS_MAC:
+        ls_db = Path.home() / "Library/Preferences/com.apple.LaunchServices"
+        ls_size = 0
+        if ls_db.exists():
+            ls_size = dir_size(ls_db) if ls_db.is_dir() else ls_db.stat().st_size
+        checks.append({
+            "name": "Launch Services DB",
+            "status": "warn" if ls_size > 50 * 1024 * 1024 else "pass",
+            "detail": format_size(ls_size),
+            "fix_hint": "Run `lsregister -kill -r` to rebuild",
+            "value": ls_size,
+        })
 
-    # Homebrew outdated
-    out, _, rc = run_cmd(["brew", "outdated", "--quiet"], timeout=15)
-    outdated = len(out.strip().splitlines()) if rc == 0 and out.strip() else 0
-    checks.append({
-        "name": "Homebrew Outdated",
-        "status": "warn" if outdated > 20 else "pass",
-        "detail": f"{outdated} outdated packages",
-        "fix_hint": "Run `brew upgrade` to update",
-        "value": outdated,
-    })
+    # Homebrew outdated (macOS only)
+    if IS_MAC:
+        out, _, rc = run_cmd(["brew", "outdated", "--quiet"], timeout=15)
+        outdated = len(out.strip().splitlines()) if rc == 0 and out.strip() else 0
+        checks.append({
+            "name": "Homebrew Outdated",
+            "status": "warn" if outdated > 20 else "pass",
+            "detail": f"{outdated} outdated packages",
+            "fix_hint": "Run `brew upgrade` to update",
+            "value": outdated,
+        })
 
     # node_modules count estimate
     nm_count = _estimate_node_modules()
@@ -171,16 +175,17 @@ def _run_all_checks() -> list[dict]:
     if docker_info:
         checks.append(docker_info)
 
-    # Quarantine DB
-    qdb = Path.home() / "Library/Preferences/com.apple.LaunchServices.QuarantineEventsV2"
-    qsize = qdb.stat().st_size if qdb.exists() else 0
-    checks.append({
-        "name": "Quarantine DB",
-        "status": "warn" if qsize > 10 * 1024 * 1024 else "pass",
-        "detail": format_size(qsize),
-        "fix_hint": "Run `macmon privacy --clean`",
-        "value": qsize,
-    })
+    # Quarantine DB (macOS only)
+    if IS_MAC:
+        qdb = Path.home() / "Library/Preferences/com.apple.LaunchServices.QuarantineEventsV2"
+        qsize = qdb.stat().st_size if qdb.exists() else 0
+        checks.append({
+            "name": "Quarantine DB",
+            "status": "warn" if qsize > 10 * 1024 * 1024 else "pass",
+            "detail": format_size(qsize),
+            "fix_hint": "Run `macmon privacy --clean`",
+            "value": qsize,
+        })
 
     # Battery health
     bat_check = _check_battery()
@@ -207,15 +212,16 @@ def _run_all_checks() -> list[dict]:
             "value": 999,
         })
 
-    # macOS updates
-    updates = _check_macos_updates()
-    if updates is not None:
-        checks.append({
-            "name": "macOS Updates",
-            "status": "warn" if updates > 0 else "pass",
-            "detail": f"{updates} updates pending" if updates > 0 else "Up to date",
-            "value": updates,
-        })
+    # macOS updates (macOS only -- softwareupdate/defaults)
+    if IS_MAC:
+        updates = _check_macos_updates()
+        if updates is not None:
+            checks.append({
+                "name": "macOS Updates",
+                "status": "warn" if updates > 0 else "pass",
+                "detail": f"{updates} updates pending" if updates > 0 else "Up to date",
+                "value": updates,
+            })
 
     return checks
 

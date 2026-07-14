@@ -15,6 +15,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from .config import load_config
+from .platform_compat import IS_MAC, cache_dirs, log_dirs, temp_dirs
 from .utils import (
     confirm_action,
     console,
@@ -368,13 +369,15 @@ def _scan_system_junk() -> list[dict]:
     max_age_days = cfg.get("cleaner", {}).get("log_max_age_days", 7)
     cutoff = time.time() - (max_age_days * 86400)
 
-    # User logs
-    user_logs = Path.home() / "Library/Logs"
-    if user_logs.exists():
-        size, count, paths = _scan_old_files(user_logs, cutoff)
-        results.append({"name": "User Logs (old)", "size": size, "count": count, "paths": paths})
+    # User logs. log_dirs() is per-OS (macOS ~/Library/Logs; Linux ~/.local/state
+    # + /var/log). On Windows it is empty, so this category is skipped cleanly.
+    for log_dir in log_dirs():
+        if log_dir.exists():
+            size, count, paths = _scan_old_files(log_dir, cutoff)
+            results.append({"name": "User Logs (old)", "size": size, "count": count, "paths": paths})
 
-    # Crash reports (individual files only; skip root-owned system dir when not writable)
+    # Crash reports (individual files only; skip root-owned system dir when not
+    # writable). These are macOS paths -- they simply do not exist elsewhere.
     for crash_dir in [
         Path.home() / "Library/Logs/DiagnosticReports",
         Path("/Library/Logs/DiagnosticReports"),
@@ -383,20 +386,13 @@ def _scan_system_junk() -> list[dict]:
             size, count, paths = _scan_dir_all(crash_dir)
             results.append({"name": f"Crash Reports ({crash_dir.name})", "size": size, "count": count, "paths": paths})
 
-    # User temp (3+ days old -- fresher files may be in active use)
-    tmpdir = os.environ.get("TMPDIR", "/tmp")
-    tmppath = Path(tmpdir)
-    if tmppath.exists():
-        three_days_ago = time.time() - 3 * 86400
+    # Temp files (3+ days old -- fresher files may be in active use). temp_dirs()
+    # is per-OS: macOS TMPDIR + /private/tmp, Linux /tmp, Windows TEMP/TMP.
+    three_days_ago = time.time() - 3 * 86400
+    for tmppath in temp_dirs():
         size, count, paths = _scan_old_files(tmppath, three_days_ago)
-        results.append({"name": "User Temp Files", "size": size, "count": count, "paths": paths})
-
-    # /private/tmp old files
-    private_tmp = Path("/private/tmp")
-    if private_tmp.exists():
-        three_days_ago = time.time() - 3 * 86400
-        size, count, paths = _scan_old_files(private_tmp, three_days_ago)
-        results.append({"name": "System Temp (old)", "size": size, "count": count, "paths": paths})
+        name = "System Temp (old)" if str(tmppath) in ("/private/tmp", "/tmp") else "User Temp Files"
+        results.append({"name": name, "size": size, "count": count, "paths": paths})
 
     return results
 
@@ -670,21 +666,23 @@ def _scan_app_caches() -> list[dict]:
 
 def _scan_user_caches() -> list[dict]:
     results = []
-    user_caches = Path.home() / "Library/Caches"
-    if not user_caches.exists():
-        return results
 
+    # cache_dirs() is per-OS: macOS ~/Library/Caches; Windows LOCALAPPDATA + TEMP;
+    # Linux ~/.cache. On macOS this is exactly the single dir scanned before.
     entries = []
-    try:
-        for d in user_caches.iterdir():
-            if d.is_dir():
-                try:
-                    s = dir_size(d)
-                    entries.append((d, s))
-                except (OSError, PermissionError):
-                    pass
-    except (OSError, PermissionError):
-        pass
+    for cache_root in cache_dirs():
+        if not cache_root.exists():
+            continue
+        try:
+            for d in cache_root.iterdir():
+                if d.is_dir():
+                    try:
+                        s = dir_size(d)
+                        entries.append((d, s))
+                    except (OSError, PermissionError):
+                        pass
+        except (OSError, PermissionError):
+            pass
 
     entries.sort(key=lambda x: x[1], reverse=True)
     top = entries[:20]
@@ -736,6 +734,9 @@ def _clean_module(module_name: str, scan_only: bool = False, permanent: bool = F
 # ── Special cleaners ────────────────────────────────────────────────────
 
 def _clean_clipboard():
+    if not IS_MAC:
+        console.print("[yellow]Clipboard clearing requires macOS.[/]")
+        return
     try:
         subprocess.run(["pbcopy"], input=b"", timeout=5)
         console.print("[green]Clipboard cleared.[/]")
@@ -755,6 +756,9 @@ _RECENT_SFL_PREFIXES = (
 
 
 def _clean_recent_items(force_yes: bool = False):
+    if not IS_MAC:
+        console.print("[yellow]Clearing recent items requires macOS.[/]")
+        return
     if not confirm_action("Clear macOS recent items lists?", force_yes=force_yes):
         return
     console.print("[cyan]Clearing recent items...[/]")
@@ -783,6 +787,9 @@ def _clean_recent_items(force_yes: bool = False):
 
 
 def _setup_schedule():
+    if not IS_MAC:
+        console.print("[yellow]Scheduled auto-clean requires macOS (launchd).[/]")
+        return
     plist_path = Path.home() / "Library/LaunchAgents/com.macmon.autoclean.plist"
     macmon_path = Path(__file__).parent.parent / "macmon.py"
 

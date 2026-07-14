@@ -12,6 +12,7 @@
   <a href="https://github.com/SoCloseSociety/macmon/stargazers"><img src="https://img.shields.io/github/stars/SoCloseSociety/macmon?style=flat-square&color=575ECF" alt="Stars"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-575ECF?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/macOS-12%2B-575ECF?style=flat-square&logo=apple&logoColor=white" alt="macOS 12+">
+  <img src="https://img.shields.io/badge/Windows%20%7C%20Linux-core-575ECF?style=flat-square" alt="Windows and Linux core support">
   <img src="https://img.shields.io/badge/license-MIT-575ECF?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/modules-17-575ECF?style=flat-square" alt="17 modules">
   <img src="https://img.shields.io/badge/commands-30%2B-575ECF?style=flat-square" alt="30+ commands">
@@ -50,6 +51,33 @@ If you have ever searched for *"how to clean my Mac"*, *"free CCleaner alternati
 - **Developer-first cleanup** — reclaims `node_modules`, stale venvs, Docker cache, Xcode/DerivedData, npm/pip/brew caches with safety guards.
 - **Safe deletes** — moves to Trash by default and never silently escalates to permanent deletion.
 - **One binary of a habit** — monitor, clean, secure and keep your Mac fast from a single CLI.
+
+---
+
+## Platform support
+
+macmon is **macOS-first** (that is where every feature works), with a
+**cross-platform core** so the portable tools also run on Windows and Linux.
+On other platforms, macOS-only commands degrade gracefully with a clear
+"requires macOS" message instead of crashing.
+
+| Feature | macOS | Windows | Linux |
+|---|:---:|:---:|:---:|
+| `ps` / `kill` / `suspend` / `nice` (processes) | ✅ | ✅ | ✅ |
+| `disk` / `bigfiles` / `dupes` | ✅ | ✅ | ✅ |
+| `clean` (temp / cache / logs / dev caches) | ✅ | ✅ | ✅ |
+| `gc` (node_modules, venvs, docker, caches) | ✅ | ✅ | ✅ |
+| `network` / `flush-dns` | ✅ | ✅ | ✅ |
+| `docker` management | ✅ | ✅ | ✅ |
+| `health` score | ✅ | ✅ (core checks) | ✅ (core checks) |
+| **`sentinel`** monitor + auto-remediation | ✅ | ✅ (schtasks) | ✅ (cron) |
+| Live `dashboard` (TUI) | ✅ | ✅ | ✅ |
+| `security` (pf, SIP, FileVault, Gatekeeper) | ✅ | -- | -- |
+| `privacy` / `startup` / `uninstall` / `auto` / `focus` | ✅ | -- | -- |
+
+On Windows/Linux install by cloning + `pip install -r requirements.txt`, then
+`python macmon.py`. The macOS `install.sh` sets up the `macmon` shortcut on
+macOS/Linux.
 
 ---
 

@@ -17,9 +17,14 @@ from .utils import (
     run_cmd,
     safe_stat,
 )
+from .platform_compat import require_os
 
 
 def run_privacy(scan: bool = False, clean: bool = False, full: bool = False, force_yes: bool = False):
+    msg = require_os("macOS")
+    if msg:
+        console.print(f"[yellow]{msg}[/]")
+        return
     console.print(Panel("[bold]macmon privacy[/] -- Privacy Traces Wiper", border_style="red"))
 
     traces = _scan_all_traces()

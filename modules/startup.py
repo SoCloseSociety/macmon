@@ -9,6 +9,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .utils import confirm_action, console, format_size, log_action, run_cmd
+from .platform_compat import require_os
 
 
 AGENT_DIRS = {
@@ -28,6 +29,10 @@ def run_startup(
     audit: bool = False,
     force_yes: bool = False,
 ):
+    msg = require_os("macOS")
+    if msg:
+        console.print(f"[yellow]{msg}[/]")
+        return
     if disable:
         _disable_item(disable, force_yes)
         return

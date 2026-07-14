@@ -14,6 +14,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from .utils import confirm_action, console, dir_size, format_size, log_action, run_cmd
+from .platform_compat import require_os
 
 try:
     from send2trash import send2trash
@@ -47,6 +48,10 @@ def run_uninstaller(
     permanent: bool = False,
     force_yes: bool = False,
 ):
+    msg = require_os("macOS")
+    if msg:
+        console.print(f"[yellow]{msg}[/]")
+        return
     if list_apps:
         _list_all_apps()
         return
