@@ -14,6 +14,7 @@ State lives under ~/.macmon/ (metrics.jsonl, alerts, config).
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -58,8 +59,14 @@ DEFAULTS = {
     "rtt_ms": 400.0,
     "disk_free_gb": 15.0,
     "ai_fleet": 12,
-    "auto_purge": False,   # gentle opt-in remediation (sudo -n purge)
-    "ping_every": 5,       # ping only every Nth sample (spares a metered link)
+    "ping_every": 5,          # ping only every Nth sample (spares a metered link)
+    # ── Auto-remediation (safe escalation on memory pressure) ──
+    "auto_purge": False,      # LEVEL 1 (non-destructive): sudo -n purge inactive RAM
+    "auto_trim_fleet": False, # LEVEL 2 (opt-in): close IDLE AI sessions when critical
+    "fleet_keep": 4,          # always keep at least this many AI sessions
+    "ram_critical": 90.0,     # remediation triggers above this RAM% ...
+    "swap_critical_gb": 8.0,  # ... AND above this swap usage
+    "idle_samples": 10,       # a session must be idle this many samples (~10 min) first
 }
 
 
@@ -214,6 +221,81 @@ def _read_json(path, default):
         return default
 
 
+def _claude_sessions():
+    """Live Claude Code sessions (VSCode extension), with current CPU and age."""
+    out = []
+    for p in psutil.process_iter(["pid", "cmdline", "cpu_percent", "memory_info", "create_time"]):
+        try:
+            cmd = " ".join(p.info["cmdline"] or [])
+            if "anthropic.claude-code" in cmd or "/native-binary/claude" in cmd:
+                out.append({
+                    "pid": p.info["pid"],
+                    "cpu": p.info["cpu_percent"] or 0.0,
+                    "rss": (p.info["memory_info"].rss if p.info["memory_info"] else 0),
+                    "start": p.info["create_time"] or 0,
+                })
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+    return out
+
+
+def _update_idle_streaks(sessions, astate):
+    """Track how many consecutive samples each session has been idle (<1% CPU).
+    Self-prunes: only currently-alive PIDs are kept."""
+    prev = astate.get("idle_streak", {})
+    cur = {}
+    for s in sessions:
+        pid = str(s["pid"])
+        cur[pid] = (prev.get(pid, 0) + 1) if s["cpu"] < 1.0 else 0
+    astate["idle_streak"] = cur
+    return cur
+
+
+def _trim_fleet(sessions, streaks, keep, idle_samples, force=False):
+    """Close idle sessions beyond `keep`. Protects the `keep` MOST RECENTLY
+    ACTIVE sessions (lowest idle streak, newest as tie-break) -- so the session
+    you are using is spared even if the sampler runs while you read output. Only
+    closes sessions idle for idle_samples samples in a row (unless force).
+    SIGTERM (graceful); transcripts persist and each is resumable with --resume."""
+    if len(sessions) <= keep:
+        return []
+    ranked = sorted(sessions, key=lambda s: (streaks.get(str(s["pid"]), 0), -s["start"]))
+    protected = {s["pid"] for s in ranked[:keep]}
+    closed = []
+    for s in sessions:
+        if s["pid"] in protected:
+            continue
+        if force or streaks.get(str(s["pid"]), 0) >= idle_samples:
+            try:
+                os.kill(s["pid"], signal.SIGTERM)
+                closed.append(s["pid"])
+            except (ProcessLookupError, PermissionError):
+                continue
+    return closed
+
+
+def _remediate(vm, sw, cfg, astate, now, sessions, streaks):
+    """Safe escalation when memory pressure is genuinely high. Always notifies
+    what it did. Level 1 (purge) is non-destructive; level 2 (trim) is opt-in."""
+    critical = vm.percent > cfg["ram_critical"] and sw.used / 1e9 > cfg["swap_critical_gb"]
+    if not critical:
+        return []
+    done = []
+    if cfg.get("auto_purge") and now - astate.get("_purge", 0) > 1800:
+        r = subprocess.run(["sudo", "-n", "purge"], capture_output=True, timeout=60)
+        if r.returncode == 0:
+            astate["_purge"] = now
+            done.append(("auto_purge", f"RAM inactive purgee (RAM {vm.percent:.0f}%, swap {sw.used/1e9:.0f} Go)"))
+    if cfg.get("auto_trim_fleet") and now - astate.get("_trim", 0) > 900:
+        closed = _trim_fleet(sessions, streaks, int(cfg["fleet_keep"]), int(cfg["idle_samples"]))
+        if closed:
+            astate["_trim"] = now
+            done.append(("auto_trim", f"{len(closed)} sessions IA inactives fermees (RAM critique) -- resumables"))
+    for key, msg in done:
+        _notify("macmon auto", msg)
+    return done
+
+
 def run_sample():
     """Take one measurement, record it, fire alerts. Called by the LaunchAgent."""
     MACMON_DIR.mkdir(exist_ok=True)
@@ -273,10 +355,11 @@ def run_sample():
             _notify(title, msg)
             fired.append((key, msg))
 
-    if cfg.get("auto_purge") and vm.percent > 95 and sw.used / 1e9 > cfg["swap_used_gb"]:
-        if now - astate.get("_purge", 0) > 3600:
-            astate["_purge"] = now
-            subprocess.run(["sudo", "-n", "purge"], capture_output=True, timeout=60)
+    # ── Auto-remediation (safe escalation on memory pressure) ──
+    sessions = _claude_sessions()
+    streaks = _update_idle_streaks(sessions, astate)
+    for key, msg in _remediate(vm, sw, cfg, astate, now, sessions, streaks):
+        fired.append((key, msg))
 
     try:
         ASTATE.write_text(json.dumps(astate))
@@ -454,7 +537,8 @@ def show_status():
     t = Table.grid(padding=(0, 2))
     t.add_row("Sentinel (60s sampler)", Text("ACTIVE" if MONITOR_LABEL in out else "STOPPED", style=GREEN if MONITOR_LABEL in out else RED))
     t.add_row("Weekly health agent", Text("ACTIVE" if WEEKLY_LABEL in out else "STOPPED", style=GREEN if WEEKLY_LABEL in out else RED))
-    t.add_row("Auto-purge remediation", Text("ON" if cfg.get("auto_purge") else "OFF (notify-only)", style=AMBER if cfg.get("auto_purge") else DIM))
+    t.add_row("Auto-purge (RAM)", Text("ON" if cfg.get("auto_purge") else "OFF (notify-only)", style=GREEN if cfg.get("auto_purge") else DIM))
+    t.add_row("Auto-trim idle AI sessions", Text("ON" if cfg.get("auto_trim_fleet") else "OFF", style=AMBER if cfg.get("auto_trim_fleet") else DIM))
     t.add_row("Metrics collected", Text(f"{len(_load(100000))} samples", style=DIM))
     console.print(Panel(t, title="[bold]SENTINEL STATUS[/]", border_style=DIM))
 
@@ -536,6 +620,61 @@ def force_clean():
         _macmon("clean", "--all", "-y")
 
 
+def _write_conf(updates: dict):
+    cfg = {}
+    try:
+        cfg = json.loads(CONF.read_text())
+    except Exception:
+        pass
+    cfg.update(updates)
+    CONF.write_text(json.dumps(cfg, indent=2))
+
+
+def _purge_nopasswd_ready() -> bool:
+    r = subprocess.run(["sudo", "-n", "purge"], capture_output=True, timeout=10)
+    return r.returncode == 0
+
+
+def enable_auto(aggressive: bool = False):
+    """Turn on auto-remediation. Level 1 (purge) is always safe; --aggressive
+    also enables closing idle AI sessions when memory is critical."""
+    _write_conf({"auto_purge": True, "auto_trim_fleet": bool(aggressive)})
+    console.print(Panel(
+        Text.assemble(
+            ("Auto-remediation ENABLED\n\n", f"bold {GREEN}"),
+            ("Level 1 (auto_purge): ", "bold white"), ("purge inactive RAM on memory pressure -- non-destructive.\n", DIM),
+            ("Level 2 (auto_trim_fleet): ", "bold white"),
+            (f"{'ON -- closes IDLE AI sessions when RAM is critical (resumable).' if aggressive else 'OFF -- enable with --enable-auto --aggressive.'}\n", DIM),
+        ),
+        title="[bold]macmon sentinel[/]", border_style=GREEN))
+    if not _purge_nopasswd_ready():
+        console.print(Text("\nFor unattended purge, allow it without a password (one-time, run this):", style=AMBER))
+        console.print(Text(f'  echo "{os.environ.get("USER", "$USER")} ALL=(root) NOPASSWD: /usr/sbin/purge" | sudo tee /etc/sudoers.d/macmon-purge && sudo chmod 440 /etc/sudoers.d/macmon-purge', style="bold white"))
+        console.print(Text("  (without it, auto_purge is skipped -- notifications still fire.)", style=DIM))
+    else:
+        console.print(Text("Passwordless purge already configured -- auto_purge is fully unattended.", style=GREEN))
+
+
+def disable_auto():
+    _write_conf({"auto_purge": False, "auto_trim_fleet": False})
+    console.print(Text("Auto-remediation DISABLED (notify-only).", style=AMBER))
+
+
+def manual_trim():
+    """Close idle AI sessions now, on demand (keeps the configured minimum)."""
+    cfg = _conf()
+    for p in psutil.process_iter(["cpu_percent"]):
+        try:
+            p.cpu_percent(None)
+        except Exception:
+            pass
+    time.sleep(0.5)
+    sessions = _claude_sessions()
+    closed = _trim_fleet(sessions, {}, int(cfg["fleet_keep"]), 0, force=True)
+    console.print(Text(f"Closed {len(closed)} idle AI session(s), kept {int(cfg['fleet_keep'])}. Resumable via --resume.",
+                       style=GREEN if closed else DIM))
+
+
 def test_notify():
     if not NOTIFIER_APP.exists():
         _build_notifier()
@@ -546,11 +685,18 @@ def test_notify():
 def run_sentinel(sample=False, install_flag=False, uninstall_flag=False, watch=False,
                  status=False, log=False, pause_flag=False, resume_flag=False,
                  force_purge=False, force_clean_flag=False, force_focus=False,
-                 test_notify_flag=False):
+                 test_notify_flag=False, enable_auto_flag=False, disable_auto_flag=False,
+                 aggressive=False, trim=False):
     if sample:
         run_sample()
     elif test_notify_flag:
         test_notify()
+    elif enable_auto_flag:
+        enable_auto(aggressive=aggressive)
+    elif disable_auto_flag:
+        disable_auto()
+    elif trim:
+        manual_trim()
     elif install_flag:
         install()
     elif uninstall_flag:

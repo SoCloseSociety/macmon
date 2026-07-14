@@ -325,6 +325,9 @@ macmon --help
 | `macmon sentinel --watch` | Live tactical console |
 | `macmon sentinel --force-clean` | Manual override: scan then clean |
 | `macmon sentinel --test-notify` | Test notification (shows the macmon icon) |
+| `macmon sentinel --enable-auto` | Enable safe auto-remediation (RAM purge) |
+| `macmon sentinel --enable-auto --aggressive` | Also auto-close idle AI sessions |
+| `macmon sentinel --trim` | Close idle AI sessions now |
 
 ---
 
@@ -340,8 +343,16 @@ An ultra-light watchdog that keeps the Mac operational without you watching it.
   forgotten sessions are surfaced, not rediscovered in a crisis.
 - **Auto-interaction:** threshold alerts fire native macOS notifications
   (swap high, memory pressure, runaway process, network saturated, low disk,
-  AI fleet too large), each with a cooldown. Opt-in gentle remediation
-  (`auto_purge`) can free inactive RAM automatically.
+  AI fleet too large), each with a cooldown.
+- **Auto-remediation (safe escalation):** when memory pressure is genuinely
+  critical the Sentinel can act on its own, and always notifies what it did:
+  - **Level 1 -- `auto_purge`** (non-destructive): frees inactive RAM via
+    `purge`. Enable with `macmon sentinel --enable-auto`.
+  - **Level 2 -- `auto_trim_fleet`** (opt-in): closes *idle* AI coding sessions
+    (Claude Code) beyond a configurable minimum, protecting the most recently
+    active ones so the session you are using is never touched. Sessions are
+    resumable (`--resume`). Enable with `macmon sentinel --enable-auto --aggressive`.
+  - Manual lever any time: `macmon sentinel --trim` closes idle sessions now.
 - **Manual override:** force levers when you must push the system --
   `--force-purge`, `--force-clean`, `--force-focus`, `--pause` / `--resume`.
 - **Branded notifications:** alerts pop up carrying the macmon icon (not the
