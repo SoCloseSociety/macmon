@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/SoCloseSociety/macmon/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/SoCloseSociety/macmon/ci.yml?branch=main&style=flat-square&label=CI" alt="CI"></a>
   <a href="https://github.com/SoCloseSociety/macmon/stargazers"><img src="https://img.shields.io/github/stars/SoCloseSociety/macmon?style=flat-square&color=575ECF" alt="Stars"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-575ECF?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/macOS-12%2B-575ECF?style=flat-square&logo=apple&logoColor=white" alt="macOS 12+">
@@ -60,6 +61,11 @@ macmon is **macOS-first** (that is where every feature works), with a
 **cross-platform core** so the portable tools also run on Windows and Linux.
 On other platforms, macOS-only commands degrade gracefully with a clear
 "requires macOS" message instead of crashing.
+
+This is not a claim -- it is enforced. [CI](.github/workflows/ci.yml) runs on
+**macOS, Ubuntu and Windows** (Python 3.11 and 3.13) on every push: it imports
+all 18 modules, smoke-tests the portable commands, and asserts that every
+macOS-only command exits cleanly with a "requires macOS" notice off-mac.
 
 | Feature | macOS | Windows | Linux |
 |---|:---:|:---:|:---:|
