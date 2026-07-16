@@ -465,6 +465,8 @@ def sentinel(
     disable_auto: bool = typer.Option(False, "--disable-auto", help="Disable auto-remediation (notify-only)"),
     aggressive: bool = typer.Option(False, "--aggressive", help="With --enable-auto: also auto-close idle AI sessions"),
     trim: bool = typer.Option(False, "--trim", help="Close idle AI sessions now (keeps the configured minimum)"),
+    unload_ollama: bool = typer.Option(False, "--unload-ollama", help="Unload idle ollama models now (they reload on demand)"),
+    setup_purge: bool = typer.Option(False, "--setup-purge", help="Allow purge without a password so auto-purge runs unattended"),
 ):
     """MACMON-SENTINEL: ultra-light monitor + tactical console."""
     from modules.sentinel import run_sentinel
@@ -473,7 +475,7 @@ def sentinel(
         watch=watch, status=status, log=log, pause_flag=pause, resume_flag=resume,
         force_purge=force_purge, force_clean_flag=force_clean, force_focus=force_focus,
         test_notify_flag=test_notify, enable_auto_flag=enable_auto, disable_auto_flag=disable_auto,
-        aggressive=aggressive, trim=trim,
+        aggressive=aggressive, trim=trim, unload_ollama=unload_ollama, setup_purge_flag=setup_purge,
     )
 
 

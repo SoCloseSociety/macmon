@@ -122,6 +122,13 @@ def _applescript_escape(s: str) -> str:
 
 
 def send_notification(title: str, message: str, style: str = "osascript"):
+    # Off macOS, osascript does not exist: route to the platform notifier
+    # (PowerShell toast on Windows, notify-send on Linux).
+    from .platform_compat import IS_MAC
+    from .platform_compat import notify as _os_notify
+    if not IS_MAC:
+        _os_notify(title, message)
+        return
     if style == "osascript":
         try:
             msg = _applescript_escape(message)

@@ -62,8 +62,11 @@ DEFAULTS = {
     "disk_free_gb": 15.0,
     "ai_fleet": 12,
     "ping_every": 5,          # ping only every Nth sample (spares a metered link)
+    "ollama_gb": 2.0,         # warn when idle ollama models hold more than this
+    "vm_gb": 4.0,             # warn when a Docker/Colima VM holds more than this
     # ── Auto-remediation (safe escalation on memory pressure) ──
     "auto_purge": False,      # LEVEL 1 (non-destructive): sudo -n purge inactive RAM
+    "auto_unload_ollama": False,  # LEVEL 1 (non-destructive): unload IDLE ollama models
     "auto_trim_fleet": False, # LEVEL 2 (opt-in): close IDLE AI sessions when critical
     "fleet_keep": 4,          # always keep at least this many AI sessions
     "ram_critical": 90.0,     # remediation triggers above this RAM% ...
@@ -280,6 +283,65 @@ def _trim_fleet(sessions, streaks, keep, idle_samples, force=False):
     return closed
 
 
+# ── Heavy background services (the usual hidden RAM hogs) ────────────────
+
+def _ollama_status() -> dict:
+    """Loaded ollama models: {'gb': float, 'models': [names], 'busy': bool}.
+
+    `busy` means a runner is actively inferring, so models must NOT be unloaded.
+    """
+    out = {"gb": 0.0, "models": [], "busy": False}
+    try:
+        r = subprocess.run(["ollama", "ps"], capture_output=True, text=True, timeout=8)
+        if r.returncode != 0:
+            return out
+        for line in r.stdout.splitlines()[1:]:
+            m = re.match(r"^(\S+)\s+\S+\s+([\d.]+)\s*(GB|MB)", line)
+            if m:
+                size = float(m.group(2)) / (1024 if m.group(3) == "MB" else 1)
+                out["models"].append(m.group(1))
+                out["gb"] += size
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+        return out
+    out["gb"] = round(out["gb"], 1)
+    # A runner burning CPU is mid-inference -- treat as busy
+    for p in psutil.process_iter(["name", "cmdline", "cpu_percent"]):
+        try:
+            cmd = " ".join(p.info["cmdline"] or [])
+            if "ollama" in cmd and "runner" in cmd and (p.info["cpu_percent"] or 0) > 5:
+                out["busy"] = True
+                break
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+    return out
+
+
+def _vm_status() -> dict:
+    """Docker/Colima VM footprint (Apple Virtualization or Docker Desktop)."""
+    gb = 0.0
+    for p in psutil.process_iter(["cmdline", "memory_info"]):
+        try:
+            cmd = " ".join(p.info["cmdline"] or [])
+            if "Virtualization.VirtualMachine" in cmd or "com.docker.virtualization" in cmd:
+                gb += (p.info["memory_info"].rss if p.info["memory_info"] else 0) / 1e9
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+    return {"gb": round(gb, 1)}
+
+
+def _unload_ollama(models: list[str]) -> list[str]:
+    """Unload models from memory. Non-destructive: ollama reloads on demand."""
+    done = []
+    for m in models:
+        try:
+            r = subprocess.run(["ollama", "stop", m], capture_output=True, timeout=20)
+            if r.returncode == 0:
+                done.append(m)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            break
+    return done
+
+
 def _remediate(vm, sw, cfg, astate, now, sessions, streaks):
     """Safe escalation when memory pressure is genuinely high. Always notifies
     what it did. Level 1 (purge) is non-destructive; level 2 (trim) is opt-in."""
@@ -287,6 +349,16 @@ def _remediate(vm, sw, cfg, astate, now, sessions, streaks):
     if not critical:
         return []
     done = []
+    # LEVEL 1a -- unload idle ollama models. Non-destructive: they reload on the
+    # next request. Often the single biggest hidden hog (multi-GB on the GPU).
+    if cfg.get("auto_unload_ollama") and now - astate.get("_ollama", 0) > 900:
+        oll = _ollama_status()
+        if oll["models"] and not oll["busy"] and oll["gb"] >= cfg["ollama_gb"]:
+            freed = _unload_ollama(oll["models"])
+            if freed:
+                astate["_ollama"] = now
+                done.append(("auto_ollama",
+                             f"{oll['gb']:.1f} Go de modeles ollama decharges ({', '.join(freed)}) -- rechargement auto a la demande"))
     if IS_MAC and cfg.get("auto_purge") and now - astate.get("_purge", 0) > 1800:
         r = subprocess.run(["sudo", "-n", "purge"], capture_output=True, timeout=60)
         if r.returncode == 0:
@@ -326,6 +398,8 @@ def run_sample():
     fleet = _ai_fleet()
     tname, tcpu, trss = _top_proc()
     rtt = _ping_rtt() if seq % max(1, int(cfg["ping_every"])) == 0 else None
+    oll = _ollama_status()
+    vmst = _vm_status()
 
     rec = {
         "ts": now, "cpu": round(cpu, 1), "ram": round(vm.percent, 1),
@@ -333,6 +407,7 @@ def run_sample():
         "disk_free_gb": round(du.free / 1e9, 1),
         "claude": fleet["claude"], "codex": fleet["codex"], "mcp": fleet["mcp"],
         "top": [tname, round(tcpu, 1), trss], "rtt": rtt,
+        "ollama_gb": oll["gb"], "vm_gb": vmst["gb"],
     }
     _rotate()
     with open(METRICS, "a") as f:
@@ -354,6 +429,13 @@ def run_sample():
          f"{du.free/1e9:.0f} Go libres -- lancez 'macmon sentinel --force-clean'.", 3600),
         ("fleet", fleet_total > cfg["ai_fleet"], "Mac: flotte IA",
          f"{fleet_total} sessions IA ouvertes (claude+codex).", 7200),
+        # Hidden hogs: an idle ollama model or a Docker/Colima VM can silently
+        # hold multiple GB. Notify only -- unloading is handled by remediation.
+        ("ollama", oll["gb"] >= cfg["ollama_gb"] and not oll["busy"], "Mac: ollama en memoire",
+         f"{oll['gb']:.1f} Go de modeles ollama charges et inactifs ({', '.join(oll['models'][:2])}). "
+         f"Dechargez: macmon sentinel --unload-ollama", 3600),
+        ("vm", vmst["gb"] >= cfg["vm_gb"], "Mac: VM Docker/Colima",
+         f"La VM tient {vmst['gb']:.1f} Go. Si inutilisee: colima stop", 7200),
     ]
     for key, cond, title, msg, cd in checks:
         if cond and now - astate.get(key, 0) >= cd:
@@ -486,6 +568,13 @@ def _snapshot_panel():
     right.add_row(Text("  claude", style=DIM), Text(f"{fleet[0]}x {fleet[1]/1024:.1f}G", style=DIM))
     right.add_row(Text("  codex", style=DIM), Text(f"{codex[0]}x {codex[1]/1024:.1f}G", style=DIM))
     right.add_row(Text("  mcp", style=DIM), Text(f"{mcp[0]}x {mcp[1]/1024:.1f}G", style=DIM))
+    # Hidden hogs
+    og = latest.get("ollama_gb", 0) or 0
+    vg = latest.get("vm_gb", 0) or 0
+    if og:
+        right.add_row(Text("OLLAMA", style="bold white"), Text(f"{og:.1f}G loaded", style=AMBER if og >= 2 else DIM))
+    if vg:
+        right.add_row(Text("VM", style="bold white"), Text(f"{vg:.1f}G", style=AMBER if vg >= 4 else DIM))
 
     top = latest["top"]
     body = Group(
@@ -560,6 +649,7 @@ def show_status():
     t.add_row("Platform", Text(OS_NAME, style=DIM))
     t.add_row("Sentinel (60s sampler)", Text("ACTIVE" if mon_active else "STOPPED", style=GREEN if mon_active else RED))
     t.add_row("Weekly health agent", Text("ACTIVE" if weekly_active else ("STOPPED" if IS_MAC else "macOS only"), style=GREEN if weekly_active else DIM))
+    t.add_row("Auto-unload ollama models", Text("ON" if cfg.get("auto_unload_ollama") else "OFF", style=GREEN if cfg.get("auto_unload_ollama") else DIM))
     t.add_row("Auto-purge (RAM)", Text("ON" if cfg.get("auto_purge") else "OFF (notify-only)", style=GREEN if cfg.get("auto_purge") else DIM))
     t.add_row("Auto-trim idle AI sessions", Text("ON" if cfg.get("auto_trim_fleet") else "OFF", style=AMBER if cfg.get("auto_trim_fleet") else DIM))
     t.add_row("Metrics collected", Text(f"{len(_load(100000))} samples", style=DIM))
@@ -701,13 +791,15 @@ def _purge_nopasswd_ready() -> bool:
 def enable_auto(aggressive: bool = False):
     """Turn on auto-remediation. Level 1 (purge, macOS) is non-destructive;
     --aggressive also enables closing idle AI sessions when memory is critical."""
-    _write_conf({"auto_purge": True, "auto_trim_fleet": bool(aggressive)})
+    _write_conf({"auto_purge": True, "auto_unload_ollama": True, "auto_trim_fleet": bool(aggressive)})
     purge_line = ("purge inactive RAM on memory pressure -- non-destructive.\n" if IS_MAC
                   else f"(macOS only -- not applicable on {OS_NAME}).\n")
     console.print(Panel(
         Text.assemble(
             ("Auto-remediation ENABLED\n\n", f"bold {GREEN}"),
-            ("Level 1 (auto_purge): ", "bold white"), (purge_line, DIM),
+            ("Level 1a (auto_unload_ollama): ", "bold white"),
+            ("unload IDLE ollama models when RAM is critical -- they reload on demand.\n", DIM),
+            ("Level 1b (auto_purge): ", "bold white"), (purge_line, DIM),
             ("Level 2 (auto_trim_fleet): ", "bold white"),
             (f"{'ON -- closes IDLE AI sessions when RAM is critical (resumable).' if aggressive else 'OFF -- enable with --enable-auto --aggressive.'}\n", DIM),
         ),
@@ -721,8 +813,62 @@ def enable_auto(aggressive: bool = False):
 
 
 def disable_auto():
-    _write_conf({"auto_purge": False, "auto_trim_fleet": False})
+    _write_conf({"auto_purge": False, "auto_trim_fleet": False, "auto_unload_ollama": False})
     console.print(Text("Auto-remediation DISABLED (notify-only).", style=AMBER))
+
+
+def manual_unload_ollama():
+    """Unload ollama models now. Non-destructive: they reload on demand."""
+    oll = _ollama_status()
+    if not oll["models"]:
+        console.print(Text("No ollama model is loaded.", style=DIM))
+        return
+    if oll["busy"]:
+        console.print(Text("ollama is mid-inference -- refusing to unload. Retry when idle.", style=AMBER))
+        return
+    freed = _unload_ollama(oll["models"])
+    if freed:
+        console.print(Text(f"Unloaded {oll['gb']:.1f} GB: {', '.join(freed)}", style=GREEN))
+        console.print(Text("They reload automatically on the next request.", style=DIM))
+    else:
+        console.print(Text("Could not unload (is ollama running?).", style=AMBER))
+
+
+def setup_purge():
+    """Allow `purge` without a password so auto_purge can run unattended.
+
+    Validates the sudoers snippet with visudo BEFORE installing it -- a malformed
+    sudoers file would break sudo system-wide.
+    """
+    m = require_os("macOS")
+    if m:
+        console.print(f"[yellow]{m}[/]")
+        return
+    user = os.environ.get("USER") or os.environ.get("LOGNAME")
+    if not user:
+        console.print("[red]Cannot determine the current user.[/]")
+        return
+    line = f"{user} ALL=(root) NOPASSWD: /usr/sbin/purge\n"
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".sudoers", delete=False) as f:
+        f.write(line)
+        tmp = f.name
+    os.chmod(tmp, 0o440)
+    console.print("[cyan]Validating the sudoers snippet...[/]")
+    # stdio is inherited so sudo can prompt for the password on the user's TTY
+    if subprocess.run(["sudo", "visudo", "-cf", tmp]).returncode != 0:
+        console.print("[red]Invalid sudoers syntax -- aborting (nothing changed).[/]")
+        os.unlink(tmp)
+        return
+    ok = subprocess.run(["sudo", "cp", tmp, "/etc/sudoers.d/macmon-purge"]).returncode == 0
+    if ok:
+        subprocess.run(["sudo", "chmod", "440", "/etc/sudoers.d/macmon-purge"])
+    os.unlink(tmp)
+    if ok and _purge_nopasswd_ready():
+        _write_conf({"auto_purge": True})
+        console.print(Text("Passwordless purge configured -- auto_purge is now fully unattended.", style=GREEN))
+    else:
+        console.print(Text("Setup did not take effect. Remove with: sudo rm /etc/sudoers.d/macmon-purge", style=AMBER))
 
 
 def manual_trim():
@@ -751,7 +897,7 @@ def run_sentinel(sample=False, install_flag=False, uninstall_flag=False, watch=F
                  status=False, log=False, pause_flag=False, resume_flag=False,
                  force_purge=False, force_clean_flag=False, force_focus=False,
                  test_notify_flag=False, enable_auto_flag=False, disable_auto_flag=False,
-                 aggressive=False, trim=False):
+                 aggressive=False, trim=False, unload_ollama=False, setup_purge_flag=False):
     if sample:
         run_sample()
     elif test_notify_flag:
@@ -760,6 +906,10 @@ def run_sentinel(sample=False, install_flag=False, uninstall_flag=False, watch=F
         enable_auto(aggressive=aggressive)
     elif disable_auto_flag:
         disable_auto()
+    elif unload_ollama:
+        manual_unload_ollama()
+    elif setup_purge_flag:
+        setup_purge()
     elif trim:
         manual_trim()
     elif install_flag:

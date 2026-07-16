@@ -31,19 +31,28 @@ else:
 # ── Load average (os.getloadavg is Unix-only) ────────────────────────────
 
 def load_average() -> tuple[float, float, float]:
-    """(1m, 5m, 15m) load. On Windows there is no native load average, so we
-    approximate it from instantaneous CPU% scaled by core count."""
+    """(1m, 5m, 15m) load average.
+
+    Windows has no native load average: fall back to psutil, which emulates it
+    with a background sampler, and to a CPU%-scaled estimate as a last resort.
+    """
     try:
-        return os.getloadavg()
+        return os.getloadavg()          # Unix
     except (AttributeError, OSError):
-        try:
-            import psutil
-            pct = (psutil.cpu_percent(interval=None) or 0.0) / 100.0
-            n = psutil.cpu_count(logical=True) or 1
-            v = round(pct * n, 2)
-            return (v, v, v)
-        except Exception:
-            return (0.0, 0.0, 0.0)
+        pass
+    try:
+        import psutil
+        return psutil.getloadavg()      # psutil emulates this on Windows
+    except Exception:
+        pass
+    try:
+        import psutil
+        pct = (psutil.cpu_percent(interval=None) or 0.0) / 100.0
+        n = psutil.cpu_count(logical=True) or 1
+        v = round(pct * n, 2)
+        return (v, v, v)
+    except Exception:
+        return (0.0, 0.0, 0.0)
 
 
 # ── Feature gating ───────────────────────────────────────────────────────
