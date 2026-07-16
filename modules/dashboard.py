@@ -709,11 +709,23 @@ def _build_footer(cpu: float) -> Panel:
 
 # ── Keyboard actions (REAL actions, not just scans) ─────────────────────
 
+# Windows: arrows / Del / F-keys arrive as a 2-byte sequence -- a prefix byte
+# (b'\x00' or b'\xe0') followed by the scan code. The scan code overlaps with
+# our ASCII shortcuts (Down -> 'P' = purge, Del -> 'S' = sweep, F9 -> 'C' =
+# clean --all, PgDn -> 'Q' = quit), so the prefix MUST be drained and the whole
+# extended key ignored, or a harmless arrow press fires a destructive action.
+_WIN_EXT_PREFIXES = (b"\x00", b"\xe0")
+
+
 def _get_key_nonblocking():
     if msvcrt is not None:            # Windows
         if msvcrt.kbhit():
             try:
-                return msvcrt.getch().decode("utf-8", "ignore") or None
+                ch = msvcrt.getch()
+                if ch in _WIN_EXT_PREFIXES:
+                    msvcrt.getch()    # consume the scan code, ignore the key
+                    return None
+                return ch.decode("utf-8", "ignore") or None
             except Exception:
                 return None
         return None
@@ -726,7 +738,11 @@ def _read_one_key():
     """Blocking single-key read, cross-platform."""
     if msvcrt is not None:
         try:
-            return msvcrt.getch().decode("utf-8", "ignore")
+            ch = msvcrt.getch()
+            if ch in _WIN_EXT_PREFIXES:
+                msvcrt.getch()        # drain the scan code so it stays unbuffered
+                return ""
+            return ch.decode("utf-8", "ignore")
         except Exception:
             return ""
     return sys.stdin.read(1)

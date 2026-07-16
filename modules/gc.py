@@ -27,6 +27,18 @@ except ImportError:
     send2trash = None
 
 
+def _pip_cache_dirs() -> list[Path]:
+    """pip's cache location differs per OS (was hardcoded to the macOS path)."""
+    from .platform_compat import IS_MAC, IS_WINDOWS
+    home = Path.home()
+    if IS_MAC:
+        return [home / "Library/Caches/pip"]
+    if IS_WINDOWS:
+        local = os.environ.get("LOCALAPPDATA")
+        return [Path(local) / "pip/Cache"] if local else [home / "AppData/Local/pip/Cache"]
+    return [Path(os.environ.get("XDG_CACHE_HOME", home / ".cache")) / "pip"]
+
+
 def _trash_or_rm(path: Path, permanent: bool = False) -> bool:
     if permanent:
         try:
@@ -114,12 +126,13 @@ def run_gc(
             if s > 0:
                 categories.append({"name": "bun cache", "size": s, "count": 1, "paths": [str(bun_cache)], "action": "delete"})
 
-        # pip cache
-        pip_cache = Path.home() / "Library/Caches/pip"
-        if pip_cache.exists():
-            s = dir_size(pip_cache)
-            if s > 0:
-                categories.append({"name": "pip cache", "size": s, "count": 1, "paths": [str(pip_cache)], "action": "delete"})
+        # pip cache (location differs per OS)
+        for pip_cache in _pip_cache_dirs():
+            if pip_cache.exists():
+                s = dir_size(pip_cache)
+                if s > 0:
+                    categories.append({"name": "pip cache", "size": s, "count": 1, "paths": [str(pip_cache)], "action": "delete"})
+                    break
 
         # Stale node_modules
         progress.update(task, description="Scanning stale node_modules...")

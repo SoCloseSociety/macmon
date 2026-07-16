@@ -73,12 +73,16 @@ def cache_dirs() -> list[Path]:
     if IS_MAC:
         return [home / "Library/Caches"]
     if IS_WINDOWS:
+        # %LOCALAPPDATA% itself is NOT a cache dir -- it is the Windows
+        # equivalent of ~/Library/Application Support and holds real user data
+        # (LOCALAPPDATA\Google = Chrome profile, LOCALAPPDATA\Programs = where
+        # VS Code is installed). Only return genuine cache locations.
         out = []
-        for env in ("LOCALAPPDATA", "TEMP"):
-            v = os.environ.get(env)
-            if v:
-                out.append(Path(v))
-        return out or [home / "AppData/Local"]
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            out.append(Path(local) / "Microsoft/Windows/INetCache")
+            out.append(Path(local) / "Temp")
+        return [p for p in out] or [home / "AppData/Local/Temp"]
     return [Path(os.environ.get("XDG_CACHE_HOME", home / ".cache"))]
 
 
@@ -103,7 +107,10 @@ def log_dirs() -> list[Path]:
         return [home / "Library/Logs"]
     if IS_WINDOWS:
         return []  # Windows apps log under LOCALAPPDATA (covered by cache_dirs)
-    return [home / ".local/state", Path("/var/log")]
+    # /var/log is system-owned (under sudo we would delete rotated syslog /
+    # journal / audit archives) and ~/.local/state is XDG app state (nvim undo
+    # history, tool DBs), not logs. Only the XDG log subdir is safe to sweep.
+    return [home / ".local/state/log"]
 
 
 def app_support_dir() -> Path:
@@ -121,6 +128,16 @@ def _escape_applescript(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _escape_ps(s: str) -> str:
+    """Escape a value for a single-quoted PowerShell literal.
+
+    PowerShell escapes a single quote by doubling it. Required because alert
+    text embeds data read off the machine (process names, ollama model names)
+    and macmon's own alerts contain quotes, e.g. "lancez 'macmon sentinel'".
+    """
+    return s.replace("'", "''")
+
+
 def notify(title: str, message: str):
     """Best-effort desktop notification on any platform."""
     try:
@@ -130,16 +147,21 @@ def notify(title: str, message: str):
                  f'display notification "{_escape_applescript(message)}" with title "{_escape_applescript(title)}"'],
                 capture_output=True, timeout=5)
         elif IS_WINDOWS:
-            # PowerShell balloon/toast via the shell (no external deps)
+            # PowerShell balloon/toast via the shell (no external deps).
+            # ShowBalloonTip is async: without the sleep, PowerShell exits and
+            # disposes the NotifyIcon before the balloon renders (rc=0, so the
+            # failure is silent). Hold the process open, then dispose cleanly.
             ps = (
                 "[reflection.assembly]::loadwithpartialname('System.Windows.Forms') > $null;"
                 "$n = New-Object System.Windows.Forms.NotifyIcon;"
                 "$n.Icon = [System.Drawing.SystemIcons]::Information;"
                 "$n.Visible = $true;"
-                f"$n.ShowBalloonTip(5000, '{title}', '{message}', 'Info');"
+                f"$n.ShowBalloonTip(5000, '{_escape_ps(title)}', '{_escape_ps(message)}', 'Info');"
+                "Start-Sleep -Seconds 6;"
+                "$n.Dispose();"
             )
             subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                           capture_output=True, timeout=8)
+                           capture_output=True, timeout=12)
         elif IS_LINUX:
             subprocess.run(["notify-send", title, message], capture_output=True, timeout=5)
     except Exception:

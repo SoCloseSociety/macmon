@@ -14,8 +14,8 @@
   <img src="https://img.shields.io/badge/macOS-12%2B-575ECF?style=flat-square&logo=apple&logoColor=white" alt="macOS 12+">
   <img src="https://img.shields.io/badge/Windows%20%7C%20Linux-core-575ECF?style=flat-square" alt="Windows and Linux core support">
   <img src="https://img.shields.io/badge/license-MIT-575ECF?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/modules-17-575ECF?style=flat-square" alt="17 modules">
-  <img src="https://img.shields.io/badge/commands-30%2B-575ECF?style=flat-square" alt="30+ commands">
+  <img src="https://img.shields.io/badge/modules-18-575ECF?style=flat-square" alt="18 modules">
+  <img src="https://img.shields.io/badge/commands-30-575ECF?style=flat-square" alt="30 commands">
   <img src="https://img.shields.io/badge/telemetry-none-brightgreen?style=flat-square" alt="No telemetry">
   <img src="https://img.shields.io/badge/cost-$0-brightgreen?style=flat-square" alt="Zero Cost">
 </p>
@@ -42,7 +42,7 @@
 
 If you have ever searched for *"how to clean my Mac"*, *"free CCleaner alternative for macOS"*, *"free up disk space on Mac"*, *"why is my Mac slow"*, or *"macOS system monitor CLI"* — this is the tool, and it never phones home.
 
-**30+ commands** · **17 modules** · **Live dashboard** · **MACMON-SENTINEL always-on watchdog** · **Keyboard shortcuts that execute real actions** · **Autopilot daemon** · **Thermal management** · **Security &amp; malware scanner** · **Docker manager** · **100% local, zero telemetry**
+**30 commands** · **18 modules** · **Live dashboard** · **MACMON-SENTINEL always-on watchdog** · **Keyboard shortcuts that execute real actions** · **Autopilot daemon** · **Thermal management** · **Security &amp; malware scanner** · **Docker manager** · **100% local, zero telemetry**
 
 ### Why developers pick macmon
 
@@ -65,8 +65,8 @@ On other platforms, macOS-only commands degrade gracefully with a clear
 |---|:---:|:---:|:---:|
 | `ps` / `kill` / `suspend` / `nice` (processes) | ✅ | ✅ | ✅ |
 | `disk` / `bigfiles` / `dupes` | ✅ | ✅ | ✅ |
-| `clean` (temp / cache / logs / dev caches) | ✅ | ✅ | ✅ |
-| `gc` (node_modules, venvs, docker, caches) | ✅ | ✅ | ✅ |
+| `clean` (temp / cache / logs / dev caches) <sup>1</sup> | ✅ | ✅ | ✅ |
+| `gc` (node_modules, venvs, docker, caches) <sup>2</sup> | ✅ | ✅ | ✅ |
 | `network` / `flush-dns` | ✅ | ✅ | ✅ |
 | `docker` management | ✅ | ✅ | ✅ |
 | `health` score | ✅ | ✅ (core checks) | ✅ (core checks) |
@@ -74,6 +74,14 @@ On other platforms, macOS-only commands degrade gracefully with a clear
 | Live `dashboard` (TUI) | ✅ | ✅ | ✅ |
 | `security` (pf, SIP, FileVault, Gatekeeper) | ✅ | -- | -- |
 | `privacy` / `startup` / `uninstall` / `auto` / `focus` | ✅ | -- | -- |
+
+<sup>1</sup> Core paths only (temp, caches, logs, dev caches) route through the
+cross-platform layer. `clean --browsers` still uses macOS browser-profile paths
+(`~/Library/...`), so it finds nothing on Windows/Linux today.
+
+<sup>2</sup> Core scanning (node_modules, venvs, `__pycache__`, Docker, npm /
+pnpm / yarn / bun) is cross-platform. The pip cache path is macOS-only today, so
+that one category comes back empty elsewhere.
 
 On Windows/Linux install by cloning + `pip install -r requirements.txt`, then
 `python macmon.py`. The macOS `install.sh` sets up the `macmon` shortcut on
@@ -353,9 +361,12 @@ macmon --help
 | `macmon sentinel --watch` | Live tactical console |
 | `macmon sentinel --force-clean` | Manual override: scan then clean |
 | `macmon sentinel --test-notify` | Test notification (shows the macmon icon) |
-| `macmon sentinel --enable-auto` | Enable safe auto-remediation (RAM purge) |
+| `macmon sentinel --enable-auto` | Enable safe auto-remediation (unload idle ollama models + RAM purge) |
 | `macmon sentinel --enable-auto --aggressive` | Also auto-close idle AI sessions |
+| `macmon sentinel --disable-auto` | Disable all auto-remediation (back to notify-only) |
 | `macmon sentinel --trim` | Close idle AI sessions now |
+| `macmon sentinel --unload-ollama` | Unload idle ollama models now (they reload on demand) |
+| `macmon sentinel --setup-purge` | Grant passwordless `purge` via sudoers so auto-purge runs unattended |
 
 ---
 
@@ -369,18 +380,52 @@ An ultra-light watchdog that keeps the Mac operational without you watching it.
 - **Precise:** tracks CPU, RAM, swap, load, disk, network RTT, the top CPU
   process, and the AI-agent fleet (Claude Code / codex / MCP counts + RSS) so
   forgotten sessions are surfaced, not rediscovered in a crisis.
+- **Hidden RAM hogs, surfaced:** it also tracks the two big ones nothing else
+  shows you -- **loaded ollama models** (`ollama ps`, multi-GB and easy to
+  forget) and the **Docker/Colima VM footprint**. The VM is *notify-only*: the
+  Sentinel warns above `vm_gb` and never stops it on its own.
 - **Auto-interaction:** threshold alerts fire native macOS notifications
   (swap high, memory pressure, runaway process, network saturated, low disk,
   AI fleet too large), each with a cooldown.
-- **Auto-remediation (safe escalation):** when memory pressure is genuinely
-  critical the Sentinel can act on its own, and always notifies what it did:
-  - **Level 1 -- `auto_purge`** (non-destructive): frees inactive RAM via
-    `purge`. Enable with `macmon sentinel --enable-auto`.
+- **Auto-remediation (safe escalation):** nothing is automatic until you opt in.
+  Remediation only fires when memory pressure is genuinely critical (RAM above
+  `ram_critical` **and** swap above `swap_critical_gb`), and the Sentinel always
+  notifies what it did:
+  - **Level 1a -- `auto_unload_ollama`** (non-destructive): unloads **idle**
+    ollama models when RAM is critical and they hold at least `ollama_gb`. Never
+    touches a model mid-inference (a busy runner is detected and skipped), and
+    models reload automatically on the next request. **Turned ON by
+    `--enable-auto`.**
+  - **Level 1b -- `auto_purge`** (non-destructive, macOS only): frees inactive
+    RAM via `purge`. **Turned ON by `--enable-auto`.**
   - **Level 2 -- `auto_trim_fleet`** (opt-in): closes *idle* AI coding sessions
-    (Claude Code) beyond a configurable minimum, protecting the most recently
-    active ones so the session you are using is never touched. Sessions are
-    resumable (`--resume`). Enable with `macmon sentinel --enable-auto --aggressive`.
-  - Manual lever any time: `macmon sentinel --trim` closes idle sessions now.
+    (Claude Code) beyond a configurable minimum (`fleet_keep`), protecting the
+    most recently active ones so the session you are using is never touched. A
+    session must be idle for `idle_samples` samples (~10 min) first, and sessions
+    are resumable (`--resume`). **Requires `macmon sentinel --enable-auto --aggressive`.**
+  - Turn everything back off with `macmon sentinel --disable-auto` (notify-only).
+  - Manual levers any time: `macmon sentinel --trim` closes idle sessions now,
+    `macmon sentinel --unload-ollama` unloads idle ollama models now.
+
+> **Heads-up:** `--enable-auto` enables levels 1a **and** 1b. That means once RAM
+> is critical, macmon may unload your loaded ollama models without asking. It is
+> non-destructive (they reload on demand, and never mid-inference), but if you
+> want notifications only, do not run `--enable-auto`.
+
+### Passwordless purge (`--setup-purge`)
+
+`purge` requires root, so unattended `auto_purge` needs sudo without a password
+prompt. `macmon sentinel --setup-purge` sets that up explicitly, and only that:
+
+- It writes **`/etc/sudoers.d/macmon-purge`** containing exactly one line:
+  `<your-user> ALL=(root) NOPASSWD: /usr/sbin/purge`
+- The snippet is validated with `visudo -c` **before** being installed (a
+  malformed sudoers file would break `sudo` system-wide), then installed `0440`.
+- The grant is **scoped to that single binary** -- `/usr/sbin/purge` and nothing
+  else. It is not blanket passwordless sudo.
+- Without it, `auto_purge` is simply skipped and notifications still fire. It is
+  optional.
+- **Revoke at any time:** `sudo rm /etc/sudoers.d/macmon-purge`
 - **Manual override:** force levers when you must push the system --
   `--force-purge`, `--force-clean`, `--force-focus`, `--pause` / `--resume`.
 - **Branded notifications:** alerts pop up carrying the macmon icon (not the
@@ -395,16 +440,39 @@ macmon sentinel --status      # agent + config status
 macmon sentinel --log         # recent alerts
 ```
 
-Config lives in `~/.macmon/sentinel.conf` (JSON): thresholds and `auto_purge`.
+### Sentinel config
+
+Config lives in `~/.macmon/sentinel.conf` (JSON). Any key you omit falls back to
+the default below.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `swap_used_gb` | `6.0` | Alert when swap usage exceeds this many GB |
+| `ram_pct` | `92.0` | Alert when RAM usage exceeds this percentage |
+| `proc_cpu` | `95.0` | Alert when a single process exceeds this CPU% (runaway) |
+| `rtt_ms` | `400.0` | Alert when network round-trip time exceeds this |
+| `disk_free_gb` | `15.0` | Alert when free disk space drops below this |
+| `ai_fleet` | `12` | Alert when the AI-agent fleet exceeds this many processes |
+| `ping_every` | `5` | Ping only every Nth sample (spares a metered link) |
+| `ollama_gb` | `2.0` | Warn when idle ollama models hold more than this |
+| `vm_gb` | `4.0` | Warn when a Docker/Colima VM holds more than this (notify-only) |
+| `auto_purge` | `false` | Level 1b: purge inactive RAM when critical (macOS only) |
+| `auto_unload_ollama` | `false` | Level 1a: unload idle ollama models when critical |
+| `auto_trim_fleet` | `false` | Level 2: close idle AI sessions when critical |
+| `fleet_keep` | `4` | Always keep at least this many AI sessions alive |
+| `ram_critical` | `90.0` | Remediation triggers above this RAM% ... |
+| `swap_critical_gb` | `8.0` | ... **and** above this swap usage, never on one alone |
+| `idle_samples` | `10` | A session must be idle this many samples (~10 min) before trimming |
 
 ---
 
 ## Architecture
 
 ```
-macmon.py                CLI router (typer, 28+ commands)
+macmon.py                CLI router (typer, 30 commands)
 modules/
   dashboard.py           Live TUI (rich) — 12 panels, keyboard shortcuts
+  sentinel.py            MACMON-SENTINEL: 60s sampler, alerts, auto-remediation
   processes.py           Process manager, sweep, ports
   cleaner.py             System cleaner (junk, browsers, apps)
   gc.py                  Dev garbage collector
@@ -419,6 +487,7 @@ modules/
   disk.py                Disk analyzer & big file finder
   network.py             Network monitor
   config.py              TOML config manager
+  platform_compat.py     Cross-platform layer (macOS / Windows / Linux paths, require_os)
   utils.py               Shared utilities, SQLite DB, logging
 ```
 

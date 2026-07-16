@@ -37,3 +37,6 @@ env/
 # Env files
 .env
 .env.*
+
+# Internal working notes
+tasks/

@@ -11,6 +11,7 @@ Design goals: precise, surgical, near-zero cost.
 
 State lives under ~/.macmon/ (metrics.jsonl, alerts, config).
 """
+import getpass
 import json
 import os
 import re
@@ -53,6 +54,10 @@ NOTIFY_PAYLOAD = MACMON_DIR / ".notify_payload"
 ICNS_SRC = REPO_DIR / "assets/macmon.icns"
 
 GREEN, AMBER, RED, DIM = "bright_green", "yellow", "bright_red", "grey50"
+
+# Notification title prefix. Platform-neutral: macmon also runs on Windows/Linux,
+# where a toast titled "Mac: ..." would make no sense.
+ALERT_TITLE = "macmon"
 
 DEFAULTS = {
     "swap_used_gb": 6.0,
@@ -285,6 +290,13 @@ def _trim_fleet(sessions, streaks, keep, idle_samples, force=False):
 
 # ── Heavy background services (the usual hidden RAM hogs) ────────────────
 
+# `ollama ps` prints sizes with decimal HumanBytes (1000-based, not 1024-based),
+# and can emit any unit -- a missing unit here would silently drop the model from
+# `models` so it would never be unloaded.
+_SIZE_RE = r"([\d.]+)\s*(B|KB|MB|GB|TB)\b"
+_SIZE_FACTOR_GB = {"B": 1e-9, "KB": 1e-6, "MB": 1e-3, "GB": 1.0, "TB": 1e3}
+
+
 def _ollama_status() -> dict:
     """Loaded ollama models: {'gb': float, 'models': [names], 'busy': bool}.
 
@@ -296,37 +308,59 @@ def _ollama_status() -> dict:
         if r.returncode != 0:
             return out
         for line in r.stdout.splitlines()[1:]:
-            m = re.match(r"^(\S+)\s+\S+\s+([\d.]+)\s*(GB|MB)", line)
+            m = re.match(r"^(\S+)\s+\S+\s+" + _SIZE_RE, line)
             if m:
-                size = float(m.group(2)) / (1024 if m.group(3) == "MB" else 1)
                 out["models"].append(m.group(1))
-                out["gb"] += size
+                out["gb"] += float(m.group(2)) * _SIZE_FACTOR_GB[m.group(3).upper()]
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
         return out
     out["gb"] = round(out["gb"], 1)
-    # A runner burning CPU is mid-inference -- treat as busy
-    for p in psutil.process_iter(["name", "cmdline", "cpu_percent"]):
+    # A runner burning CPU is mid-inference -- treat as busy and never unload it.
+    # Self-priming: psutil returns 0.0 on the FIRST cpu_percent read, so we must
+    # prime + sample here rather than trust process_iter's unprimed value (which
+    # would report "idle" always and let us unload a model mid-inference).
+    runners = []
+    for p in psutil.process_iter(["cmdline"]):
         try:
             cmd = " ".join(p.info["cmdline"] or [])
-            if "ollama" in cmd and "runner" in cmd and (p.info["cpu_percent"] or 0) > 5:
-                out["busy"] = True
-                break
+            if "ollama" in cmd and "runner" in cmd:
+                p.cpu_percent(None)      # prime
+                runners.append(p)
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
+    if runners:
+        time.sleep(0.2)                  # short window, only when ollama is up
+        for p in runners:
+            try:
+                if p.cpu_percent(None) > 5:
+                    out["busy"] = True
+                    break
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
     return out
 
 
 def _vm_status() -> dict:
-    """Docker/Colima VM footprint (Apple Virtualization or Docker Desktop)."""
+    """Virtual machine footprint: {'gb': float, 'owner': str}.
+
+    com.apple.Virtualization.VirtualMachine is Apple's GENERIC VZ host, shared by
+    UTM, Podman, Colima and Docker Desktop -- so we report the owning process name
+    instead of guessing which tool is running.
+    """
     gb = 0.0
-    for p in psutil.process_iter(["cmdline", "memory_info"]):
+    owners: list[tuple[float, str]] = []
+    for p in psutil.process_iter(["name", "cmdline", "memory_info"]):
         try:
             cmd = " ".join(p.info["cmdline"] or [])
             if "Virtualization.VirtualMachine" in cmd or "com.docker.virtualization" in cmd:
-                gb += (p.info["memory_info"].rss if p.info["memory_info"] else 0) / 1e9
+                rss = (p.info["memory_info"].rss if p.info["memory_info"] else 0) / 1e9
+                gb += rss
+                owners.append((rss, (p.info["name"] or "?")[:24]))
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
-    return {"gb": round(gb, 1)}
+    # Attribute the alert to the heaviest VM process (best available hint).
+    owner = max(owners)[1] if owners else ""
+    return {"gb": round(gb, 1), "owner": owner}
 
 
 def _unload_ollama(models: list[str]) -> list[str]:
@@ -337,14 +371,21 @@ def _unload_ollama(models: list[str]) -> list[str]:
             r = subprocess.run(["ollama", "stop", m], capture_output=True, timeout=20)
             if r.returncode == 0:
                 done.append(m)
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            break
+        except subprocess.TimeoutExpired:
+            continue  # one wedged model must not abandon the others
+        except FileNotFoundError:
+            break     # ollama is not installed at all -- nothing more to try
     return done
 
 
-def _remediate(vm, sw, cfg, astate, now, sessions, streaks):
+def _remediate(vm, sw, cfg, astate, now, sessions, streaks, oll):
     """Safe escalation when memory pressure is genuinely high. Always notifies
-    what it did. Level 1 (purge) is non-destructive; level 2 (trim) is opt-in."""
+    what it did. Level 1 (purge) is non-destructive; level 2 (trim) is opt-in.
+
+    `oll` is the ollama status already measured by the caller -- recomputing it
+    here would cost a second `ollama ps` plus a full process scan on every
+    critical sample.
+    """
     critical = vm.percent > cfg["ram_critical"] and sw.used / 1e9 > cfg["swap_critical_gb"]
     if not critical:
         return []
@@ -352,25 +393,26 @@ def _remediate(vm, sw, cfg, astate, now, sessions, streaks):
     # LEVEL 1a -- unload idle ollama models. Non-destructive: they reload on the
     # next request. Often the single biggest hidden hog (multi-GB on the GPU).
     if cfg.get("auto_unload_ollama") and now - astate.get("_ollama", 0) > 900:
-        oll = _ollama_status()
         if oll["models"] and not oll["busy"] and oll["gb"] >= cfg["ollama_gb"]:
+            # Stamp the cooldown on every ATTEMPT: a persistently failing
+            # `ollama stop` must not be retried on every 60s sample.
+            astate["_ollama"] = now
             freed = _unload_ollama(oll["models"])
             if freed:
-                astate["_ollama"] = now
                 done.append(("auto_ollama",
-                             f"{oll['gb']:.1f} Go de modeles ollama decharges ({', '.join(freed)}) -- rechargement auto a la demande"))
+                             f"Unloaded {oll['gb']:.1f} GB of ollama models ({', '.join(freed)}) -- they reload automatically on demand"))
     if IS_MAC and cfg.get("auto_purge") and now - astate.get("_purge", 0) > 1800:
         r = subprocess.run(["sudo", "-n", "purge"], capture_output=True, timeout=60)
         if r.returncode == 0:
             astate["_purge"] = now
-            done.append(("auto_purge", f"RAM inactive purgee (RAM {vm.percent:.0f}%, swap {sw.used/1e9:.0f} Go)"))
+            done.append(("auto_purge", f"Purged inactive RAM (RAM {vm.percent:.0f}%, swap {sw.used/1e9:.0f} GB)"))
     if cfg.get("auto_trim_fleet") and now - astate.get("_trim", 0) > 900:
         closed = _trim_fleet(sessions, streaks, int(cfg["fleet_keep"]), int(cfg["idle_samples"]))
         if closed:
             astate["_trim"] = now
-            done.append(("auto_trim", f"{len(closed)} sessions IA inactives fermees (RAM critique) -- resumables"))
+            done.append(("auto_trim", f"Closed {len(closed)} idle AI session(s) (RAM critical) -- resumable"))
     for key, msg in done:
-        _notify("macmon auto", msg)
+        _notify(f"{ALERT_TITLE} auto", msg)
     return done
 
 
@@ -416,26 +458,27 @@ def run_sample():
     astate = _read_json(ASTATE, {})
     fired = []
     fleet_total = fleet["claude"][0] + fleet["codex"][0]
+    vm_owner = f" ({vmst['owner']})" if vmst.get("owner") else ""
     checks = [
-        ("swap", sw.used / 1e9 > cfg["swap_used_gb"], "Mac: swap eleve",
-         f"Swap {sw.used/1e9:.1f} Go -- redemarrez ou fermez des apps.", 3600),
-        ("ram", vm.percent > cfg["ram_pct"], "Mac: pression memoire",
-         f"RAM {vm.percent:.0f}% utilisee.", 1800),
-        ("proc", tcpu > cfg["proc_cpu"], "Mac: processus emballe",
-         f"{tname} a {tcpu:.0f}% CPU.", 900),
-        ("net", rtt is not None and rtt > cfg["rtt_ms"], "Mac: reseau sature",
-         f"Latence {rtt or 0:.0f} ms -- un transfert monopolise le lien.", 1800),
-        ("disk", du.free / 1e9 < cfg["disk_free_gb"], "Mac: disque faible",
-         f"{du.free/1e9:.0f} Go libres -- lancez 'macmon sentinel --force-clean'.", 3600),
-        ("fleet", fleet_total > cfg["ai_fleet"], "Mac: flotte IA",
-         f"{fleet_total} sessions IA ouvertes (claude+codex).", 7200),
-        # Hidden hogs: an idle ollama model or a Docker/Colima VM can silently
+        ("swap", sw.used / 1e9 > cfg["swap_used_gb"], f"{ALERT_TITLE}: high swap",
+         f"Swap {sw.used/1e9:.1f} GB -- restart or close some apps.", 3600),
+        ("ram", vm.percent > cfg["ram_pct"], f"{ALERT_TITLE}: memory pressure",
+         f"RAM {vm.percent:.0f}% used.", 1800),
+        ("proc", tcpu > cfg["proc_cpu"], f"{ALERT_TITLE}: runaway process",
+         f"{tname} is at {tcpu:.0f}% CPU.", 900),
+        ("net", rtt is not None and rtt > cfg["rtt_ms"], f"{ALERT_TITLE}: network saturated",
+         f"Latency {rtt or 0:.0f} ms -- a transfer is monopolizing the link.", 1800),
+        ("disk", du.free / 1e9 < cfg["disk_free_gb"], f"{ALERT_TITLE}: low disk",
+         f"{du.free/1e9:.0f} GB free -- run 'macmon sentinel --force-clean'.", 3600),
+        ("fleet", fleet_total > cfg["ai_fleet"], f"{ALERT_TITLE}: AI fleet",
+         f"{fleet_total} AI sessions open (claude+codex).", 7200),
+        # Hidden hogs: an idle ollama model or a virtual machine can silently
         # hold multiple GB. Notify only -- unloading is handled by remediation.
-        ("ollama", oll["gb"] >= cfg["ollama_gb"] and not oll["busy"], "Mac: ollama en memoire",
-         f"{oll['gb']:.1f} Go de modeles ollama charges et inactifs ({', '.join(oll['models'][:2])}). "
-         f"Dechargez: macmon sentinel --unload-ollama", 3600),
-        ("vm", vmst["gb"] >= cfg["vm_gb"], "Mac: VM Docker/Colima",
-         f"La VM tient {vmst['gb']:.1f} Go. Si inutilisee: colima stop", 7200),
+        ("ollama", oll["gb"] >= cfg["ollama_gb"] and not oll["busy"], f"{ALERT_TITLE}: ollama in memory",
+         f"{oll['gb']:.1f} GB of ollama models loaded and idle ({', '.join(oll['models'][:2])}). "
+         f"Unload with: macmon sentinel --unload-ollama", 3600),
+        ("vm", vmst["gb"] >= cfg["vm_gb"], f"{ALERT_TITLE}: virtual machine",
+         f"A virtual machine{vm_owner} is holding {vmst['gb']:.1f} GB. Stop it if you are not using it.", 7200),
     ]
     for key, cond, title, msg, cd in checks:
         if cond and now - astate.get(key, 0) >= cd:
@@ -446,7 +489,7 @@ def run_sample():
     # ── Auto-remediation (safe escalation on memory pressure) ──
     sessions = _claude_sessions()
     streaks = _update_idle_streaks(sessions, astate)
-    for key, msg in _remediate(vm, sw, cfg, astate, now, sessions, streaks):
+    for key, msg in _remediate(vm, sw, cfg, astate, now, sessions, streaks, oll):
         fired.append((key, msg))
 
     try:
@@ -663,7 +706,7 @@ def _macmon(*args):
     try:
         subprocess.run([py, str(MACMON_PY), *args], cwd=str(REPO_DIR))
     except FileNotFoundError as e:
-        console.print(f"[red]macmon indisponible ({e})[/]")
+        console.print(f"[red]macmon is unavailable ({e})[/]")
 
 
 def _plist(label: str, program_args: list[str], interval: int) -> str:
@@ -779,10 +822,16 @@ def _write_conf(updates: dict):
 
 
 def _purge_nopasswd_ready() -> bool:
+    """Is `purge` allowed without a password? Probes the sudoers GRANT only.
+
+    `sudo -n -l <cmd>` answers the question without executing anything: running a
+    real purge here would flush the whole filesystem buffer cache, stalling the
+    machine for seconds and leaving every app with a cold cache -- just to ask.
+    """
     if not IS_MAC:
         return False
     try:
-        r = subprocess.run(["sudo", "-n", "purge"], capture_output=True, timeout=10)
+        r = subprocess.run(["sudo", "-n", "-l", "/usr/sbin/purge"], capture_output=True, timeout=10)
         return r.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
@@ -806,7 +855,7 @@ def enable_auto(aggressive: bool = False):
         title="[bold]macmon sentinel[/]", border_style=GREEN))
     if IS_MAC and not _purge_nopasswd_ready():
         console.print(Text("\nFor unattended purge, allow it without a password (one-time, run this):", style=AMBER))
-        console.print(Text(f'  echo "{os.environ.get("USER", "$USER")} ALL=(root) NOPASSWD: /usr/sbin/purge" | sudo tee /etc/sudoers.d/macmon-purge && sudo chmod 440 /etc/sudoers.d/macmon-purge', style="bold white"))
+        console.print(Text("  macmon sentinel --setup-purge", style="bold white"))
         console.print(Text("  (without it, auto_purge is skipped -- notifications still fire.)", style=DIM))
     elif IS_MAC:
         console.print(Text("Passwordless purge already configured -- auto_purge is fully unattended.", style=GREEN))
@@ -844,9 +893,20 @@ def setup_purge():
     if m:
         console.print(f"[yellow]{m}[/]")
         return
-    user = os.environ.get("USER") or os.environ.get("LOGNAME")
+    # Derive the user from the UID, never from $USER/$LOGNAME: those are
+    # attacker-controllable env vars, and a value such as
+    #   "neo ALL=(ALL) NOPASSWD: ALL #"
+    # would comment out the rest of the line and grant permanent full root --
+    # visudo validates syntax, so it accepts that injection happily.
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = ""
     if not user:
         console.print("[red]Cannot determine the current user.[/]")
+        return
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", user):
+        console.print(f"[red]Refusing: unsafe username {user!r} -- cannot build a sudoers rule.[/]")
         return
     line = f"{user} ALL=(root) NOPASSWD: /usr/sbin/purge\n"
     import tempfile
@@ -855,15 +915,23 @@ def setup_purge():
         tmp = f.name
     os.chmod(tmp, 0o440)
     console.print("[cyan]Validating the sudoers snippet...[/]")
-    # stdio is inherited so sudo can prompt for the password on the user's TTY
-    if subprocess.run(["sudo", "visudo", "-cf", tmp]).returncode != 0:
-        console.print("[red]Invalid sudoers syntax -- aborting (nothing changed).[/]")
-        os.unlink(tmp)
-        return
-    ok = subprocess.run(["sudo", "cp", tmp, "/etc/sudoers.d/macmon-purge"]).returncode == 0
-    if ok:
-        subprocess.run(["sudo", "chmod", "440", "/etc/sudoers.d/macmon-purge"])
-    os.unlink(tmp)
+    ok = False
+    try:
+        # stdio is inherited so sudo can prompt for the password on the user's TTY
+        if subprocess.run(["sudo", "visudo", "-cf", tmp]).returncode != 0:
+            console.print("[red]Validation failed (wrong password or invalid syntax) -- aborting, nothing changed.[/]")
+            return
+        # `install` sets the mode atomically: no window where the file exists
+        # world-readable/writable, and no separate chmod that could be missed.
+        ok = subprocess.run(["sudo", "install", "-m", "0440", tmp,
+                             "/etc/sudoers.d/macmon-purge"]).returncode == 0
+    finally:
+        # Always remove the temp copy: a Ctrl-C at the sudo prompt would
+        # otherwise leave sudoers content sitting in TMPDIR forever.
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
     if ok and _purge_nopasswd_ready():
         _write_conf({"auto_purge": True})
         console.print(Text("Passwordless purge configured -- auto_purge is now fully unattended.", style=GREEN))
@@ -889,8 +957,8 @@ def manual_trim():
 def test_notify():
     if not NOTIFIER_APP.exists():
         _build_notifier()
-    _notify("macmon", "Notification de test -- icone macmon active.")
-    console.print(Text("Notification de test envoyee (avec l'icone macmon).", style=GREEN))
+    _notify(ALERT_TITLE, "Test notification -- macmon icon is active.")
+    console.print(Text("Test notification sent (with the macmon icon).", style=GREEN))
 
 
 def run_sentinel(sample=False, install_flag=False, uninstall_flag=False, watch=False,
