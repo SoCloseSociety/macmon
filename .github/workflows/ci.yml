@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+        python: ["3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # compileall is cross-platform (a modules/*.py glob does not expand on Windows)
+      - name: Compile every module
+        run: python -m compileall -q macmon.py modules
+
+      - name: Import every module
+        run: |
+          python -c "import modules.autopilot, modules.cleaner, modules.config, modules.dashboard, modules.disk, modules.docker_mgr, modules.duplicates, modules.gc, modules.health, modules.network, modules.platform_compat, modules.privacy, modules.processes, modules.security, modules.sentinel, modules.startup, modules.uninstaller, modules.utils; print('all modules import OK')"
+
+      - name: Platform layer sanity
+        run: |
+          python -c "from modules.platform_compat import OS_NAME, load_average, cache_dirs, temp_dirs, dns_flush_cmds, require_os; print('OS:', OS_NAME); print('load:', load_average()); print('cache:', [str(p) for p in cache_dirs()]); print('temp:', [str(p) for p in temp_dirs()]); print('dns:', dns_flush_cmds()); print('gate:', require_os('macOS'))"
+
+      - name: CLI loads and lists commands
+        run: python macmon.py --help
+
+      # Read-only commands that must work on every platform
+      - name: Smoke -- ps (JSON)
+        run: python -c "import json,subprocess,sys; out=subprocess.run([sys.executable,'macmon.py','ps','--json'],capture_output=True,text=True); assert out.returncode==0, out.stderr; d=json.loads(out.stdout); assert isinstance(d,list); print('ps OK:',len(d),'processes')"
+
+      - name: Smoke -- health (JSON, scored)
+        run: python -c "import json,subprocess,sys; out=subprocess.run([sys.executable,'macmon.py','health','--json'],capture_output=True,text=True); assert out.returncode==0, out.stderr; d=json.loads(out.stdout); assert 0<=d['score']<=100; print('health OK:',d['score'],'/100 |',len(d['checks']),'checks')"
+
+      - name: Smoke -- sentinel sample + console
+        run: |
+          python macmon.py sentinel --sample
+          python macmon.py sentinel --status
+
+      - name: Smoke -- disk analyzer
+        run: python macmon.py disk .
+
+      # macOS-only commands must degrade with a message off-mac, never crash
+      - name: macOS-only commands degrade cleanly (non-macOS)
+        if: runner.os != 'macOS'
+        run: python .github/scripts/check_degradation.py
+
+  lint:
+    name: lint (pyflakes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install pyflakes
+      # Report only: unused imports and undefined names, not a hard gate yet
+      - run: python -m pyflakes macmon.py modules/ || true

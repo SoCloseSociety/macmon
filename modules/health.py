@@ -12,7 +12,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .config import load_config
-from .platform_compat import IS_MAC
+from .platform_compat import IS_MAC, load_average
 from .utils import (
     REPORTS_DIR,
     console,
@@ -113,7 +113,7 @@ def _run_all_checks() -> list[dict]:
     })
 
     # CPU load
-    load1, load5, load15 = psutil.getloadavg()
+    load1, load5, load15 = load_average()
     cpu_count = psutil.cpu_count()
     load_ratio = load5 / cpu_count if cpu_count else load5
     checks.append({

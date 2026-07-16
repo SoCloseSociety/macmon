@@ -6,6 +6,14 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+# Fail fast and clearly: config.py needs stdlib tomllib (3.11+). Without this,
+# an older interpreter dies on an obscure ImportError deep in config loading.
+if sys.version_info < (3, 11):
+    sys.exit(
+        f"macmon requires Python 3.11+ (running {sys.version_info.major}.{sys.version_info.minor}). "
+        "Create a venv with a newer interpreter: python3.11 -m venv .venv"
+    )
+
 import typer
 from rich.console import Console
 

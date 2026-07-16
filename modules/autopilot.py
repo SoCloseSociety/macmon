@@ -24,7 +24,7 @@ from .utils import (
     run_cmd,
     send_notification,
 )
-from .platform_compat import require_os
+from .platform_compat import load_average, require_os
 
 DAEMON_PID_FILE = MACMON_DIR / "daemon.pid"
 FOCUS_SESSION_FILE = MACMON_DIR / "focus_session.json"
@@ -324,7 +324,7 @@ def _evaluate_thermal_rules(db, cfg: dict):
 
     # Rule: Fan noise reduction -- if CPU load is moderate but sustained,
     # reduce nice of background dev processes to let fans slow down
-    load1, _, _ = psutil.getloadavg()
+    load1, _, _ = load_average()
     core_count = psutil.cpu_count() or 1
     if load1 > core_count * 0.9:
         if _can_fire(db, "Fan Reduction", 10):

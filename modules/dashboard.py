@@ -30,7 +30,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .config import load_config
-from .platform_compat import IS_MAC
+from .platform_compat import IS_MAC, load_average
 from .utils import (
     CATEGORY_EMOJI,
     categorize_process,
@@ -345,7 +345,7 @@ def _refresh_docker_cache_async():
 def _build_header() -> Panel:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     uptime = format_duration(time.time() - psutil.boot_time())
-    load1, load5, load15 = psutil.getloadavg()
+    load1, load5, load15 = load_average()
 
     header = Text()
     header.append("  MACMON ", style="bold white on blue")
