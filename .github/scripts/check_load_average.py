@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""CI gate: load_average() must report a real value on every platform.
+
+On Windows, psutil emulates load average with a background sampler that returns
+(0.0, 0.0, 0.0) until it warms up (~5 min). macmon is a one-shot CLI, so a fresh
+process never warms it up: without a fallback, load would read 0.0 forever and
+the health check's "CPU Load" would always pass meaninglessly.
+
+This burns CPU first so an honest reading cannot be zero, then asserts it is not.
+"""
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
+
+from modules.platform_compat import OS_NAME, load_average
+
+# Make the machine genuinely busy so a correct implementation cannot report 0.
+deadline = time.time() + 1.5
+x = 0
+while time.time() < deadline:
+    x += sum(i * i for i in range(2000))
+
+la = load_average()
+print(f"OS={OS_NAME}  load_average()={la}")
+
+if not isinstance(la, tuple) or len(la) != 3:
+    sys.exit(f"FAIL: expected a 3-tuple, got {la!r}")
+if not all(isinstance(v, (int, float)) for v in la):
+    sys.exit(f"FAIL: non-numeric values in {la!r}")
+if not any(la):
+    sys.exit(
+        f"FAIL: load_average() returned the all-zero placeholder {la!r} on {OS_NAME} "
+        "after 1.5s of sustained CPU. The psutil fallback is reporting 'no data' as 'idle'."
+    )
+print("OK: load_average() reports a real value.")

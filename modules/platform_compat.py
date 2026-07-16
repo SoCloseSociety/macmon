@@ -37,17 +37,24 @@ def load_average() -> tuple[float, float, float]:
     with a background sampler, and to a CPU%-scaled estimate as a last resort.
     """
     try:
-        return os.getloadavg()          # Unix
+        return os.getloadavg()          # Unix: real kernel value
     except (AttributeError, OSError):
         pass
     try:
         import psutil
-        return psutil.getloadavg()      # psutil emulates this on Windows
+        la = psutil.getloadavg()
+        # psutil emulates load average on Windows with a background sampler that
+        # reports all-zero until it has warmed up (~5 min). macmon is a one-shot
+        # CLI, so a fresh process never warms it up -- zeros here mean "no data",
+        # not "idle". Fall through to a measured estimate instead.
+        if any(la):
+            return la
     except Exception:
         pass
     try:
         import psutil
-        pct = (psutil.cpu_percent(interval=None) or 0.0) / 100.0
+        # interval=None would return 0.0 with no baseline, so measure a window
+        pct = (psutil.cpu_percent(interval=0.15) or 0.0) / 100.0
         n = psutil.cpu_count(logical=True) or 1
         v = round(pct * n, 2)
         return (v, v, v)

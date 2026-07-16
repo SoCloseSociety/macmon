@@ -41,6 +41,11 @@ jobs:
         run: |
           python -c "from modules.platform_compat import OS_NAME, load_average, cache_dirs, temp_dirs, dns_flush_cmds, require_os; print('OS:', OS_NAME); print('load:', load_average()); print('cache:', [str(p) for p in cache_dirs()]); print('temp:', [str(p) for p in temp_dirs()]); print('dns:', dns_flush_cmds()); print('gate:', require_os('macOS'))"
 
+      # Regression gate: psutil's Windows load sampler reports all-zero until it
+      # warms up, which a one-shot CLI never does -- load must still be real.
+      - name: load_average returns a real value (not the all-zero placeholder)
+        run: python .github/scripts/check_load_average.py
+
       - name: CLI loads and lists commands
         run: python macmon.py --help
 
