@@ -667,7 +667,8 @@ def _scan_app_caches() -> list[dict]:
 def _scan_user_caches() -> list[dict]:
     results = []
 
-    # cache_dirs() is per-OS: macOS ~/Library/Caches; Windows LOCALAPPDATA + TEMP;
+    # cache_dirs() is per-OS: macOS ~/Library/Caches; Windows INetCache only
+    # (LOCALAPPDATA\Temp belongs to temp_dirs(), scanned with the 3-day guard);
     # Linux ~/.cache. On macOS this is exactly the single dir scanned before.
     entries = []
     for cache_root in cache_dirs():
@@ -717,9 +718,11 @@ def _clean_module(module_name: str, scan_only: bool = False, permanent: bool = F
         if info.get("risky"):
             console.print(f"[yellow bold]WARNING: {info['name']} contains non-regenerable data.[/]")
         if confirm_action(f"Clean {format_size(s)}?", force_yes=force_yes):
-            _trash_or_rm(path, permanent)
-            console.print(f"[green]Cleaned {info['name']} ({format_size(s)})[/]")
-            log_action("clean_module", f"{module_name} freed {format_size(s)}")
+            # _trash_or_rm returns False when the path was skipped (e.g. Trash
+            # unavailable) -- only report success when it actually removed it.
+            if _trash_or_rm(path, permanent):
+                console.print(f"[green]Cleaned {info['name']} ({format_size(s)})[/]")
+                log_action("clean_module", f"{module_name} freed {format_size(s)}")
     elif module_name == "xcode":
         for key in ["xcode_derived", "xcode_archives", "xcode_device_support", "sim_caches"]:
             _clean_module(key, scan_only, permanent, force_yes)

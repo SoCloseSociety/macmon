@@ -2,7 +2,6 @@
 
 import json
 import os
-import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -295,16 +294,13 @@ def _check_docker_usage():
     out, _, rc = run_cmd(["docker", "system", "df", "--format", "{{.Reclaimable}}"], timeout=10)
     if rc != 0:
         return None
-    # Lines look like "3.2GB (58%)" or "0B"
-    reclaimable = 0.0
-    units = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
+    # Lines look like "3.2GB (58%)" or "0B". Docker sizes are decimal
+    # (1000-based) -- reuse gc's parser instead of a local 1024-based map.
+    from .gc import _parse_docker_size
+    reclaimable = 0
     for line in out.strip().splitlines():
-        m = re.match(r"([\d.]+)\s*([KMGT]?i?B)", line.strip(), re.IGNORECASE)
-        if not m:
-            continue
-        mult = units.get(m.group(2).upper().replace("I", ""), 1)
-        reclaimable += float(m.group(1)) * mult
-    gb = reclaimable / (1024**3)
+        reclaimable += _parse_docker_size(line)
+    gb = reclaimable / (1000**3)
     return {
         "name": "Docker Disk Usage",
         "status": "fail" if gb > 30 else "warn" if gb > 10 else "pass",

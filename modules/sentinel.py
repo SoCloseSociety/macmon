@@ -15,6 +15,7 @@ import getpass
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -179,10 +180,19 @@ def _notify(title: str, msg: str):
 
 
 def _ping_rtt():
+    # Ping flags differ per platform: BSD/macOS -t is timeout (secs), but on
+    # Linux iputils -t is TTL (a TTL of 3 expires mid-route -> no time= line),
+    # and Windows uses -n (count) / -w (timeout ms) instead of -c/-t.
+    if IS_WINDOWS:
+        cmd = ["ping", "-n", "1", "-w", "3000", "1.1.1.1"]
+    elif IS_MAC:
+        cmd = ["ping", "-c", "1", "-t", "3", "1.1.1.1"]
+    else:  # Linux
+        cmd = ["ping", "-c", "1", "-W", "3", "1.1.1.1"]
     try:
-        out = subprocess.run(["ping", "-c", "1", "-t", "3", "1.1.1.1"],
-                             capture_output=True, text=True, timeout=6).stdout
-        m = re.search(r"time=([\d.]+)", out)
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=6).stdout
+        # Matches "time=1.2 ms" (macOS/Linux), "time=1ms" and "time<1ms" (Windows).
+        m = re.search(r"time[=<]([\d.]+)", out)
         return round(float(m.group(1)), 1) if m else None
     except Exception:
         return None
@@ -402,10 +412,17 @@ def _remediate(vm, sw, cfg, astate, now, sessions, streaks, oll):
                 done.append(("auto_ollama",
                              f"Unloaded {oll['gb']:.1f} GB of ollama models ({', '.join(freed)}) -- they reload automatically on demand"))
     if IS_MAC and cfg.get("auto_purge") and now - astate.get("_purge", 0) > 1800:
-        r = subprocess.run(["sudo", "-n", "purge"], capture_output=True, timeout=60)
-        if r.returncode == 0:
-            astate["_purge"] = now
-            done.append(("auto_purge", f"Purged inactive RAM (RAM {vm.percent:.0f}%, swap {sw.used/1e9:.0f} GB)"))
+        # Stamp the cooldown on every ATTEMPT (like the ollama branch): a
+        # persistently failing purge must not be retried on every 60s sample.
+        astate["_purge"] = now
+        try:
+            r = subprocess.run(["sudo", "-n", "purge"], capture_output=True, timeout=60)
+            if r.returncode == 0:
+                done.append(("auto_purge", f"Purged inactive RAM (RAM {vm.percent:.0f}%, swap {sw.used/1e9:.0f} GB)"))
+        except (subprocess.TimeoutExpired, OSError):
+            # A hung/broken purge must not crash the sampler -- ASTATE would
+            # never be written and every cooldown would be lost (alert spam).
+            pass
     if cfg.get("auto_trim_fleet") and now - astate.get("_trim", 0) > 900:
         closed = _trim_fleet(sessions, streaks, int(cfg["fleet_keep"]), int(cfg["idle_samples"]))
         if closed:
@@ -755,7 +772,8 @@ def _schedule_install() -> tuple[bool, str]:
                             "/sc", "minute", "/mo", "1", "/f"], capture_output=True, text=True)
         return (r.returncode == 0, r.stderr.strip())
     # Linux: cron (per-minute)
-    line = "* * * * * " + " ".join(cmd) + f"  # {_TASK_NAME}\n"
+    # Quote each arg -- an unquoted join breaks if the repo/home path has a space.
+    line = "* * * * * " + " ".join(shlex.quote(c) for c in cmd) + f"  # {_TASK_NAME}\n"
     cur = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
     cur = "\n".join(l for l in cur.splitlines() if _TASK_NAME not in l)
     new = (cur + "\n" + line).strip() + "\n"
@@ -949,7 +967,12 @@ def manual_trim():
             pass
     time.sleep(0.5)
     sessions = _claude_sessions()
-    closed = _trim_fleet(sessions, {}, int(cfg["fleet_keep"]), 0, force=True)
+    # Build streaks from the CPU just measured over the 0.5s priming window:
+    # a busy session (>= 1% CPU) gets streak 0 -> below idle_samples=1, so
+    # _trim_fleet can NEVER close it (and ranks it first for protection).
+    # Idle sessions get a huge streak so they are eligible beyond `keep`.
+    streaks = {str(s["pid"]): (0 if s["cpu"] >= 1.0 else 10**6) for s in sessions}
+    closed = _trim_fleet(sessions, streaks, int(cfg["fleet_keep"]), 1)
     console.print(Text(f"Closed {len(closed)} idle AI session(s), kept {int(cfg['fleet_keep'])}. Resumable via --resume.",
                        style=GREEN if closed else DIM))
 

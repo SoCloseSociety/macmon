@@ -84,12 +84,13 @@ def cache_dirs() -> list[Path]:
         # equivalent of ~/Library/Application Support and holds real user data
         # (LOCALAPPDATA\Google = Chrome profile, LOCALAPPDATA\Programs = where
         # VS Code is installed). Only return genuine cache locations.
-        out = []
+        # LOCALAPPDATA\Temp is deliberately NOT listed here: it is already
+        # covered by temp_dirs() (tempfile.gettempdir()), which the cleaner
+        # scans file-by-file with a 3-day age guard. Listing it here too made
+        # the cleaner queue fresh temp subdirs wholesale and double-count them.
         local = os.environ.get("LOCALAPPDATA")
-        if local:
-            out.append(Path(local) / "Microsoft/Windows/INetCache")
-            out.append(Path(local) / "Temp")
-        return [p for p in out] or [home / "AppData/Local/Temp"]
+        base = Path(local) if local else home / "AppData/Local"
+        return [base / "Microsoft/Windows/INetCache"]
     return [Path(os.environ.get("XDG_CACHE_HOME", home / ".cache"))]
 
 

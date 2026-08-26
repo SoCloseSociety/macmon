@@ -194,6 +194,10 @@ def _get_fan_speed_osx(cpu_pct: float = 0):
             return int(float(lines[0]))
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, IndexError):
         pass
+    # No real reading available. Only macOS gets a load-based estimate; on
+    # other platforms report no data instead of a fabricated RPM value.
+    if not IS_MAC:
+        return None
     # Estimate from CPU - typical MacBook: 0-6200 RPM
     if cpu_pct < 20:
         return 0
@@ -728,7 +732,15 @@ def _get_key_nonblocking():
                 return None
         return None
     if select.select([sys.stdin], [], [], 0.0)[0]:  # Unix
-        return sys.stdin.read(1)
+        ch = sys.stdin.read(1)
+        if ch == "\x1b":
+            # Arrow/End/Delete keys arrive as multi-byte ESC sequences (e.g.
+            # Down = ESC [ B, End = ESC [ F). Drain the trailing bytes so the
+            # final byte cannot fire an action shortcut, and ignore the key.
+            while select.select([sys.stdin], [], [], 0.0)[0]:
+                sys.stdin.read(1)
+            return None
+        return ch
     return None
 
 
@@ -743,7 +755,14 @@ def _read_one_key():
             return ch.decode("utf-8", "ignore")
         except Exception:
             return ""
-    return sys.stdin.read(1)
+    ch = sys.stdin.read(1)
+    if ch == "\x1b":
+        # Drain the rest of the ESC sequence so its final byte does not leak
+        # into the next nonblocking poll as a fake action shortcut.
+        while select.select([sys.stdin], [], [], 0.0)[0]:
+            sys.stdin.read(1)
+        return ""
+    return ch
 
 
 def _run_action_overlay(live, action_name, action_fn):
