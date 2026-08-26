@@ -540,9 +540,24 @@ macmon config --edit
 
 Key sections: `dashboard`, `thresholds`, `cleaner`, `privacy`, `gc`, `focus_mode`, `notifications`, `autopilot`.
 
+## Development
+
+```bash
+git clone https://github.com/SoCloseSociety/macmon
+cd macmon
+pip install -e ".[test]"   # runtime deps + pytest
+pytest -q                  # 123 hermetic tests: no network, no live subprocess
+```
+
+The suite is hermetic (tmp_path + monkeypatch only), so it runs anywhere. CI
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs it plus smoke
+tests on macOS, Ubuntu and Windows (Python 3.11 and 3.13) on every push --
+that matrix is what enforces the cross-platform behavior. Version history is in
+[CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
-MIT — see [LICENSE](LICENSE). Free forever, for any use.
+MIT -- see [LICENSE](LICENSE). Free forever, for any use.
 
 ## FAQ
 
