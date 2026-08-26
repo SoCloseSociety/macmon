@@ -6,7 +6,6 @@ import signal
 import sys
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import psutil
 from rich.panel import Panel
@@ -16,7 +15,6 @@ from .config import load_config
 from .utils import (
     MACMON_DIR,
     categorize_process,
-    confirm_action,
     console,
     format_size,
     get_db,

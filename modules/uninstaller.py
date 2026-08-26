@@ -1,16 +1,12 @@
 """Full app uninstaller with leftover detection for macmon."""
 
-import json
 import os
-import re
 import shutil
-import signal
 import time
 from pathlib import Path
 
 import psutil
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from .utils import confirm_action, console, dir_size, format_size, log_action, run_cmd

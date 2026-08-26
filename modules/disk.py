@@ -13,7 +13,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from .utils import console, dir_size, format_size, get_db, log_action
+from .utils import console, dir_size, format_size, get_db
 
 
 FILE_CATEGORIES = {

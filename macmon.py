@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """macmon - Mac Developer Monitor + System Cleaner CLI."""
 
-import os
 import sys
 from pathlib import Path
 from typing import Optional

@@ -5,14 +5,12 @@ import json
 import os
 import re
 import time
-from datetime import datetime
 from pathlib import Path
 
 import psutil
 from rich.panel import Panel
 from rich.table import Table
 
-from .config import load_config
 from .utils import (
     confirm_action,
     console,
@@ -20,7 +18,6 @@ from .utils import (
     get_db,
     log_action,
     run_cmd,
-    send_notification,
 )
 from .platform_compat import require_os
 
@@ -885,7 +882,7 @@ def _block_ip(ip: str):
         log_action("security_block_ip", ip)
     else:
         console.print(f"[yellow]Rule saved to {anchor_file}. Load manually: sudo pfctl -a {PF_ANCHOR} -f {anchor_file}[/]")
-        console.print(f"[dim]Enable pf: sudo pfctl -E[/]")
+        console.print("[dim]Enable pf: sudo pfctl -E[/]")
 
 
 def _unblock_ip(ip: str):

@@ -1,6 +1,5 @@
 """Live system dashboard for macmon -- rich visual TUI."""
 
-import os
 import select
 import subprocess
 import sys
@@ -37,7 +36,6 @@ from .utils import (
     console,
     format_duration,
     format_size,
-    get_db,
     run_cmd,
     smart_suggestions,
 )
@@ -591,13 +589,13 @@ def _build_alerts_panel(cpu_pct: float) -> Panel:
         lines.append("  [yellow]\u26a0 WARNING[/]  RAM > 70%")
 
     if disk_free_gb < 5:
-        lines.append(f"  [red bold]\u26a0 CRITICAL[/] Disk < 5GB")
+        lines.append("  [red bold]\u26a0 CRITICAL[/] Disk < 5GB")
     elif disk_free_gb < 15:
-        lines.append(f"  [yellow]\u26a0 WARNING[/]  Disk < 15GB")
+        lines.append("  [yellow]\u26a0 WARNING[/]  Disk < 15GB")
 
     swap = psutil.swap_memory()
     if swap.percent > 80:
-        lines.append(f"  [red bold]\u26a0 CRITICAL[/] Swap > 80%")
+        lines.append("  [red bold]\u26a0 CRITICAL[/] Swap > 80%")
 
     if not lines:
         lines.append("  [green]\u2714 All systems nominal[/]")
@@ -687,21 +685,21 @@ def _build_footer(cpu: float) -> Panel:
 
     parts = Text()
     parts.append(f" \u23f1 {now}", style="dim")
-    parts.append(f"  CPU:", style="dim")
+    parts.append("  CPU:", style="dim")
     parts.append(f"{cpu:.0f}%", style="red bold" if cpu > 90 else "yellow" if cpu > 70 else "green")
-    parts.append(f"  RAM:", style="dim")
+    parts.append("  RAM:", style="dim")
     parts.append(f"{mem.percent:.0f}%", style="red bold" if mem.percent > 88 else "yellow" if mem.percent > 70 else "green")
-    parts.append(f"  Disk:", style="dim")
+    parts.append("  Disk:", style="dim")
     parts.append(f"{format_size(disk.free)}", style="green")
 
     if temp:
         t_color = "red bold" if temp > 90 else "yellow" if temp > 75 else "green"
-        parts.append(f"  Temp:", style="dim")
+        parts.append("  Temp:", style="dim")
         parts.append(f"{temp:.0f}\u00b0C", style=t_color)
 
     # Show action status for 5 seconds
     if _action_status["msg"] and (time.time() - _action_status["time"]) < 5:
-        parts.append(f"  \u25b6 ", style="dim")
+        parts.append("  \u25b6 ", style="dim")
         parts.append(_action_status["msg"], style="bold green")
 
     return Panel(parts, border_style="bright_blue", padding=(0, 0))
@@ -756,7 +754,7 @@ def _run_action_overlay(live, action_name, action_fn):
         action_fn()
     except Exception as e:
         console.print(f"[red]Error: {e}[/]")
-    console.print(f"\n[dim]Press any key to return...[/]")
+    console.print("\n[dim]Press any key to return...[/]")
     _read_one_key()
     live.start()
 

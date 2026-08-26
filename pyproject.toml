@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "macmon"
+version = "1.2.0"
+description = "Mac Developer Monitor + System Cleaner CLI -- live dashboard, dev garbage collector, security audit, 100% local"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [
+    { name = "SoClose Society", email = "contact@soclose.co" },
+]
+keywords = [
+    "macos",
+    "monitoring",
+    "system-cleaner",
+    "cli",
+    "developer-tools",
+    "disk-cleaner",
+    "process-manager",
+    "terminal",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "rich>=13.7.0",
+    "psutil>=5.9.0",
+    "typer>=0.12",
+    "send2trash>=1.8.0",
+    "xxhash>=3.4.0",
+]
+
+[project.urls]
+Homepage = "https://soclose.co"
+Repository = "https://github.com/SoCloseSociety/macmon"
+Issues = "https://github.com/SoCloseSociety/macmon/issues"
+
+[project.scripts]
+macmon = "macmon:app"
+
+# Flat layout: root-level macmon.py (entry module) + the modules/ package.
+# Hatchling cannot auto-detect this shape, so include both explicitly.
+[tool.hatch.build.targets.wheel]
+include = ["macmon.py", "modules"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "macmon.py",
+    "modules",
+    "README.md",
+    "LICENSE",
+    "requirements.txt",
+    "install.sh",
+]

@@ -264,6 +264,8 @@ Background rules engine:
 
 ## Installation
 
+### Option 1 -- install script (recommended)
+
 ```bash
 git clone https://github.com/SoCloseSociety/macmon.git
 cd macmon
@@ -276,6 +278,26 @@ This will:
 3. Install dependencies (`rich`, `psutil`, `typer`, `send2trash`, `xxhash`)
 4. Create `/usr/local/bin/macmon` wrapper
 5. Initialize config at `~/.macmon/config.toml`
+
+### Option 2 -- pip
+
+macmon is a standard Python package (`pyproject.toml`), so it installs with pip
+into any Python 3.11+ environment and puts the `macmon` command on your PATH:
+
+```bash
+git clone https://github.com/SoCloseSociety/macmon.git
+cd macmon
+pip install .
+```
+
+Prefer an isolated install? [`pipx`](https://pipx.pypa.io) works out of the box:
+
+```bash
+pipx install .
+```
+
+For development, use an editable install: `pip install -e .`
+(PyPI release planned -- `pip install macmon` will work once published.)
 
 ### Build DMG (optional)
 

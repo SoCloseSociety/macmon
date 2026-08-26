@@ -2,9 +2,7 @@
 
 import errno
 import hashlib
-import json
 import os
-import shutil
 import stat
 from collections import defaultdict
 from pathlib import Path

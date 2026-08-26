@@ -1,13 +1,11 @@
 """Advanced Docker management for macmon."""
 
 import json
-import time
-from datetime import datetime
 
 from rich.panel import Panel
 from rich.table import Table
 
-from .utils import confirm_action, console, format_size, log_action, run_cmd
+from .utils import confirm_action, console, log_action, run_cmd
 
 
 def _docker_available() -> bool:

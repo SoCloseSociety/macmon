@@ -1,13 +1,11 @@
 """Config manager for macmon."""
 
 import subprocess
-import sys
-from pathlib import Path
 
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from .utils import CONFIG_PATH, MACMON_DIR, console, ensure_dirs, log_action
+from .utils import CONFIG_PATH, console, ensure_dirs, log_action
 
 try:
     import tomllib

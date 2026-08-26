@@ -782,11 +782,11 @@ def install():
         if IS_MAC:
             icon = _build_notifier()
             console.print(f"[dim]Notifications: {'branded macmon icon' if icon else 'system icon'}.[/]")
-        console.print(f"[dim]View anytime: macmon sentinel   |   Live: macmon sentinel --watch[/]")
+        console.print("[dim]View anytime: macmon sentinel   |   Live: macmon sentinel --watch[/]")
         run_sample()
     else:
         console.print(f"[red]Install failed: {note or 'scheduler error'}[/]")
-        console.print(f"[dim]You can still run 'macmon sentinel --sample' manually or via your own scheduler.[/]")
+        console.print("[dim]You can still run 'macmon sentinel --sample' manually or via your own scheduler.[/]")
 
 
 def uninstall():

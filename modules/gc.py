@@ -219,7 +219,7 @@ def run_gc(
         if total_size == 0:
             console.print("[green]No dev garbage found![/]")
         else:
-            console.print(f"\n[dim]Preview only. Use --clean or --all to clean.[/]")
+            console.print("\n[dim]Preview only. Use --clean or --all to clean.[/]")
         return
 
     if all_gc:
@@ -237,7 +237,7 @@ def _execute_gc(categories: list[dict], permanent: bool = False, force_yes: bool
             _, _, rc = run_cmd(["brew", "cleanup", "--prune=all"], timeout=120)
             if rc == 0:
                 total_freed += c["size"]
-                console.print(f"  [green]Homebrew cleanup done[/]")
+                console.print("  [green]Homebrew cleanup done[/]")
         elif action == "docker_prune":
             ran = False
             for cmd in c.get("commands", []):
@@ -252,7 +252,7 @@ def _execute_gc(categories: list[dict], permanent: bool = False, force_yes: bool
                     ran = True
             if ran:
                 total_freed += c["size"]
-                console.print(f"  [green]Docker cleanup done[/]")
+                console.print("  [green]Docker cleanup done[/]")
         elif action == "simctl":
             _, _, rc = run_cmd(["xcrun", "simctl", "delete", "unavailable"], timeout=60)
             if rc == 0:
@@ -261,7 +261,7 @@ def _execute_gc(categories: list[dict], permanent: bool = False, force_yes: bool
             _, _, rc = run_cmd(["go", "clean", "-modcache"], timeout=300)
             if rc == 0:
                 total_freed += c["size"]
-                console.print(f"  [green]Go module cache cleaned[/]")
+                console.print("  [green]Go module cache cleaned[/]")
         else:
             freed = _delete_paths(c.get("paths", []), permanent)
             total_freed += freed

@@ -11,10 +11,8 @@ import psutil
 from rich.panel import Panel
 from rich.table import Table
 
-from .config import load_config
 from .platform_compat import IS_MAC, load_average
 from .utils import (
-    REPORTS_DIR,
     console,
     dir_size,
     format_size,

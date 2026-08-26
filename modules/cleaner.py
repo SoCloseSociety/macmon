@@ -831,6 +831,6 @@ def _setup_schedule():
     if rc != 0:
         console.print(f"[red]launchctl load failed: {err.strip()}[/]")
         return
-    console.print(f"[green]Auto-clean scheduled (weekly Sunday 3AM)[/]")
+    console.print("[green]Auto-clean scheduled (weekly Sunday 3AM)[/]")
     console.print(f"[dim]Plist: {plist_path}[/]")
     log_action("schedule_clean", str(plist_path))

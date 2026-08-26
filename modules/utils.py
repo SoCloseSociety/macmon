@@ -1,17 +1,13 @@
 """Shared utilities for macmon."""
 
 import logging
-import os
 import sqlite3
 import subprocess
-import time
-from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from rich.console import Console
 from rich.prompt import Confirm
-from rich.text import Text
 
 MACMON_DIR = Path.home() / ".macmon"
 CONFIG_PATH = MACMON_DIR / "config.toml"
