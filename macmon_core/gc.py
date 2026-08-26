@@ -517,14 +517,21 @@ def _check_docker() -> list[dict]:
                 "commands": [["docker", "container", "prune", "-f"]],
             })
 
-    # Dangling images
-    out, _, rc = run_cmd(["docker", "images", "-f", "dangling=true", "-q"], timeout=10)
+    # Dangling images -- size the dangling set itself, NOT `system df`'s Images
+    # reclaimable. That figure is what `image prune -a` would free (every unused
+    # image, incl. tagged ones); this entry runs only the safe dangling prune,
+    # so reporting the full number over-stated reclaimable space by 100x+.
+    out, _, rc = run_cmd(
+        ["docker", "images", "-f", "dangling=true", "--format", "{{.Size}}"],
+        timeout=10,
+    )
     if rc == 0 and out.strip():
-        count = len(out.strip().splitlines())
+        sizes = [s for s in out.strip().splitlines() if s.strip()]
+        count = len(sizes)
         if count > 0:
             results.append({
                 "name": f"Docker dangling images ({count})",
-                "size": reclaimable.get("Images", 0),
+                "size": sum(_parse_docker_size(s) for s in sizes),
                 "count": count,
                 "paths": [],
                 "action": "docker_prune",

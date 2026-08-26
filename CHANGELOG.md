@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI runs the suite on macOS, Ubuntu and Windows (Python 3.11 and 3.13); a `[test]` extra (`pip install -e ".[test]"`) pulls in pytest.
 
 ### Fixed
+- `gc` reported a wildly inflated size for "Docker dangling images" -- it labeled the entry dangling and ran only `docker image prune -f`, but sized it with `docker system df`'s total Images reclaimable (what `prune -a` would free, every unused image). On a busy machine this overstated the reclaimable space by 100x+ (e.g. 20.8 GB shown vs ~120 MB actually freed). It now sums the dangling images' own sizes, matching what the safe prune reclaims. Found by dogfooding the tool on a real 65-container host.
 - `security` Docker audit missed the most common root container: an implicit-root container reports an empty `Config.User`, and the space-split dropped that trailing empty field, so the "ROOT USER" finding never fired for it. The inspect fields are now pipe-delimited and an empty user is treated as root.
 - `uninstaller` permanent delete reported success (and counted the freed bytes) even when `rmtree(ignore_errors=True)` left the path behind; it now returns whether the path is actually gone, matching the other modules' `_trash_or_rm`.
 - `health` battery check fabricated a "100% / 0 cycles" pass on Windows/Linux laptops (cycle count and capacity come from macOS `system_profiler` only); it now abstains off-macOS.

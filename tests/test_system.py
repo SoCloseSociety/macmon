@@ -184,3 +184,46 @@ class TestCheckBattery:
     def test_returns_none_when_no_battery(self, monkeypatch):
         monkeypatch.setattr(health.psutil, "sensors_battery", lambda: None)
         assert health._check_battery() is None
+
+
+# ── gc._check_docker (dangling size must match the dangling set, not df) ───
+
+class TestCheckDockerDangling:
+    def _fake_run_cmd(self, dangling_out):
+        # Dispatches on the docker subcommand; `system df` reports a large
+        # Images reclaimable (what `prune -a` would free) that must NOT leak
+        # into the dangling entry.
+        def run_cmd(cmd, timeout=None, **kw):
+            if cmd[:2] == ["docker", "info"]:
+                return ("", "", 0)
+            if cmd[:3] == ["docker", "system", "df"]:
+                return (
+                    "Images\t43.8GB\t22.4GB (51%)\n"
+                    "Containers\t196MB\t0B (0%)\n"
+                    "Local Volumes\t35.5GB\t8.6GB (24%)\n"
+                    "Build Cache\t0B\t0B",
+                    "", 0,
+                )
+            if cmd[:2] == ["docker", "ps"]:
+                return ("", "", 0)  # no stopped containers
+            if "dangling=true" in cmd:
+                return (dangling_out, "", 0)
+            return ("", "", 1)
+        return run_cmd
+
+    def test_dangling_size_is_the_dangling_set_not_df_images(self, monkeypatch):
+        monkeypatch.setattr(gcmod, "run_cmd", self._fake_run_cmd("389MB\n61.9MB"))
+        results = gcmod._check_docker()
+        dangling = [r for r in results if r["name"].startswith("Docker dangling")]
+        assert len(dangling) == 1
+        entry = dangling[0]
+        assert entry["count"] == 2
+        # 389MB + 61.9MB (decimal) -- NOT the 22.4GB df Images reclaimable.
+        assert entry["size"] == gcmod._parse_docker_size("389MB") + gcmod._parse_docker_size("61.9MB")
+        assert entry["size"] < 1_000_000_000  # well under the 22.4GB phantom
+        assert entry["commands"] == [["docker", "image", "prune", "-f"]]
+
+    def test_no_dangling_images_no_entry(self, monkeypatch):
+        monkeypatch.setattr(gcmod, "run_cmd", self._fake_run_cmd(""))
+        results = gcmod._check_docker()
+        assert not any(r["name"].startswith("Docker dangling") for r in results)
