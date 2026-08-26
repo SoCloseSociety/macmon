@@ -40,3 +40,4 @@ env/
 
 # Internal working notes
 tasks/
+.pytest_cache/

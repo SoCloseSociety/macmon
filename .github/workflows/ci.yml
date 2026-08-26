@@ -64,6 +64,14 @@ jobs:
       - name: Smoke -- disk analyzer
         run: python macmon.py disk .
 
+      # Unit + regression suite: pure functions, cross-platform layer, and the
+      # audited safety behaviors (ESC-drain, no Trash-to-permanent escalation).
+      # Runs on all three OSes, so it also proves the tests themselves are portable.
+      - name: Run test suite
+        run: |
+          python -m pip install pytest
+          python -m pytest tests/ -q
+
       # macOS-only commands must degrade with a message off-mac, never crash
       - name: macOS-only commands degrade cleanly (non-macOS)
         if: runner.os != 'macOS'

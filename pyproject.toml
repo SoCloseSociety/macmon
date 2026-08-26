@@ -51,6 +51,9 @@ Issues = "https://github.com/SoCloseSociety/macmon/issues"
 [project.scripts]
 macmon = "macmon:app"
 
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
 # Flat layout: root-level macmon.py (entry module) + the modules/ package.
 # Hatchling cannot auto-detect this shape, so include both explicitly.
 [tool.hatch.build.targets.wheel]
