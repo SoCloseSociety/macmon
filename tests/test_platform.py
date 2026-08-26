@@ -112,7 +112,11 @@ class TestDirs:
         assert len(out) == 1
         assert out[0].name == "INetCache"
         assert out[0] == tmp_path / "Microsoft/Windows/INetCache"
-        assert "Temp" not in out[0].parts
+        # The fix: cache_dirs must not return a bare Temp dir (temp_dirs covers
+        # it, with a 3-day guard). Check no RETURNED entry is a Temp dir -- not
+        # the string "Temp" anywhere in the path, since the fake LOCALAPPDATA
+        # (pytest tmp_path) itself lives under ...\AppData\Local\Temp on Windows.
+        assert not any(p.name == "Temp" for p in out)
 
     def test_cache_dirs_windows_without_localappdata(self, monkeypatch):
         _force(monkeypatch, windows=True)
