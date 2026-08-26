@@ -136,7 +136,6 @@ def _get_battery_info() -> dict:
 # ── Thermal monitoring ──────────────────────────────────────────────────
 
 def _refresh_thermal_cache(cpu_pct: float = 0):
-    global _thermal_cache
     now = time.time()
     if now - _thermal_cache["last_update"] < 5:
         return
@@ -207,7 +206,6 @@ def _get_fan_speed_osx(cpu_pct: float = 0):
 # ── Security cache ──────────────────────────────────────────────────────
 
 def _refresh_security_cache():
-    global _security_cache
     now = time.time()
     if now - _security_cache["last_update"] < 15:
         return
@@ -287,7 +285,6 @@ def _refresh_security_cache_async():
 # ── Docker cache ────────────────────────────────────────────────────────
 
 def _refresh_docker_cache():
-    global _docker_cache
     now = time.time()
     if now - _docker_cache["last_update"] < 20:
         return
@@ -481,7 +478,6 @@ def _build_thermal_panel(cpu_pct: float) -> Panel:
         lines.append("  [dim]No temp data[/]")
 
     if fan is not None:
-        fan_pct = min(100, (fan / 6500) * 100)
         fan_color = "red" if fan > 5000 else "yellow" if fan > 3000 else "green"
         lines.append(f"  Fan      [{fan_color}]{fan} RPM[/]")
 

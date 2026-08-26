@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - The internal package was renamed `modules/` -> `macmon_core/` so a `pip install` no longer drops a generic top-level `modules` package into site-packages (which would collide with any other project shipping the same name). The `macmon.py` entry point, the console script, and every command invocation are unchanged; verified end-to-end by building the wheel and running the installed `macmon` console script from a neutral directory.
 - Removed a dead `SUSPICIOUS_PROCESS_NAMES` import (and its no-op `try/except ImportError`) from the autopilot miner rule; the rule's own miner/pool-protocol keyword list is unchanged.
+- The tree is now fully pyflakes-clean: removed three unnecessary `global` declarations in the dashboard cache refreshers (the caches are dicts mutated in place, never rebound), a dead `fan_pct` local, and an unused `pytest` import. The CI lint step is now a hard gate instead of report-only, so any regression fails the build.
 
 ## [1.2.1] - 2026-08-26
 

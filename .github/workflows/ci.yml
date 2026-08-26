@@ -86,5 +86,6 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install pyflakes
-      # Report only: unused imports and undefined names, not a hard gate yet
-      - run: python -m pyflakes macmon.py macmon_core/ || true
+      # Hard gate: the tree is pyflakes-clean (no unused imports / undefined
+      # names / dead locals). Keep it that way -- a regression fails CI.
+      - run: python -m pyflakes macmon.py macmon_core/

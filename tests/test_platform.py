@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 
 import psutil
-import pytest
 
 import macmon_core.platform_compat as pc
 
