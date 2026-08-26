@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
-from modules.platform_compat import OS_NAME, load_average
+from macmon_core.platform_compat import OS_NAME, load_average
 
 stop = threading.Event()
 

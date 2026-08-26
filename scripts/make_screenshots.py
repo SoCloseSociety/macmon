@@ -28,32 +28,32 @@ def cap(name, title, render_fn):
 
 
 def cap_sentinel(rec):
-    import modules.sentinel as m
+    import macmon_core.sentinel as m
     m.console = rec
     rec.print(m._snapshot_panel())
 
 
 def cap_health(rec):
-    import modules.health as m
+    import macmon_core.health as m
     m.console = rec
     m.run_health(fix=False, report=False, json_out=False)
 
 
 def cap_ps(rec):
-    import modules.processes as m
+    import macmon_core.processes as m
     m.console = rec
     # Filter to a compact category so the capture stays readable
     m.list_processes(filter_cat="llm", sort_by="cpu", tree=False, json_out=False)
 
 
 def cap_clean(rec):
-    import modules.cleaner as m
+    import macmon_core.cleaner as m
     m.console = rec
     m.run_cleaner(scan=True, json_out=False)
 
 
 def cap_security(rec):
-    import modules.security as m
+    import macmon_core.security as m
     m.console = rec
     m.run_security(scan=True)
 

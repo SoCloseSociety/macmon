@@ -498,7 +498,7 @@ the default below.
 
 ```
 macmon.py                CLI router (typer, 30 commands)
-modules/
+macmon_core/
   dashboard.py           Live TUI (rich) — 12 panels, keyboard shortcuts
   sentinel.py            MACMON-SENTINEL: 60s sampler, alerts, auto-remediation
   processes.py           Process manager, sweep, ports

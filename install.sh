@@ -52,7 +52,7 @@ echo -e "${CYAN}Copying application files to $APP_DIR...${NC}"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR"
 cp "$SCRIPT_DIR/macmon.py" "$APP_DIR/"
-cp -R "$SCRIPT_DIR/modules" "$APP_DIR/"
+cp -R "$SCRIPT_DIR/macmon_core" "$APP_DIR/"
 cp "$SCRIPT_DIR/requirements.txt" "$APP_DIR/"
 
 # Create virtual environment

@@ -16,7 +16,7 @@ if sys.version_info < (3, 11):
 import typer
 from rich.console import Console
 
-# Ensure modules are importable
+# Ensure macmon_core is importable when run as a script from any directory
 sys.path.insert(0, str(Path(__file__).parent))
 
 app = typer.Typer(
@@ -34,7 +34,7 @@ console = Console()
 def main(ctx: typer.Context):
     """Launch the live dashboard if no subcommand given."""
     if ctx.invoked_subcommand is None:
-        from modules.dashboard import run_dashboard
+        from macmon_core.dashboard import run_dashboard
         run_dashboard()
 
 
@@ -43,7 +43,7 @@ def dashboard(
     refresh: int = typer.Option(2, "--refresh", "-r", help="Refresh interval in seconds"),
 ):
     """Live system monitoring dashboard."""
-    from modules.dashboard import run_dashboard
+    from macmon_core.dashboard import run_dashboard
     run_dashboard(refresh=refresh)
 
 
@@ -57,7 +57,7 @@ def ps(
     json_out: bool = typer.Option(False, "--json", help="JSON output"),
 ):
     """List dev-relevant processes."""
-    from modules.processes import list_processes
+    from macmon_core.processes import list_processes
     list_processes(filter_cat=filter, sort_by=sort, tree=tree, json_out=json_out)
 
 
@@ -68,21 +68,21 @@ def kill(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ):
     """Kill a process by name or PID."""
-    from modules.processes import kill_process
+    from macmon_core.processes import kill_process
     kill_process(target=target, category=category, force_yes=yes)
 
 
 @app.command()
 def suspend(target: str = typer.Argument(..., help="Process name or PID")):
     """Suspend (SIGSTOP) a process."""
-    from modules.processes import suspend_process
+    from macmon_core.processes import suspend_process
     suspend_process(target)
 
 
 @app.command()
 def resume(target: str = typer.Argument(..., help="Process name or PID")):
     """Resume (SIGCONT) a suspended process."""
-    from modules.processes import resume_process
+    from macmon_core.processes import resume_process
     resume_process(target)
 
 
@@ -92,21 +92,21 @@ def nice(
     value: int = typer.Argument(..., help="Nice value (-20 to 19)"),
 ):
     """Renice a process."""
-    from modules.processes import renice_process
+    from macmon_core.processes import renice_process
     renice_process(target, value)
 
 
 @app.command()
 def quit(app_name: str = typer.Argument(..., help="Application name")):
     """Gracefully quit a macOS app via osascript."""
-    from modules.processes import quit_app
+    from macmon_core.processes import quit_app
     quit_app(app_name)
 
 
 @app.command()
 def restart(app_name: str = typer.Argument(..., help="Application name")):
     """Quit and reopen a macOS app."""
-    from modules.processes import restart_app
+    from macmon_core.processes import restart_app
     restart_app(app_name)
 
 
@@ -119,7 +119,7 @@ def sweep(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ):
     """Hunt and kill zombie/orphan processes + stale locks."""
-    from modules.processes import run_sweep
+    from macmon_core.processes import run_sweep
     run_sweep(zombies_only=zombies, orphans_only=orphans, force_yes=yes)
 
 
@@ -130,7 +130,7 @@ def ports(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ):
     """Show port usage and manage dev ports."""
-    from modules.processes import manage_ports
+    from macmon_core.processes import manage_ports
     manage_ports(free_port=free, free_all=free_all_dev, force_yes=yes)
 
 
@@ -155,7 +155,7 @@ def clean(
     json_out: bool = typer.Option(False, "--json", help="JSON output"),
 ):
     """CCleaner-equivalent system cleaner."""
-    from modules.cleaner import run_cleaner
+    from macmon_core.cleaner import run_cleaner
     run_cleaner(
         scan=scan, run=run, all_clean=all_clean, module=module,
         browsers=browsers, all_browsers=all_browsers, browser=browser,
@@ -176,7 +176,7 @@ def gc(
     json_out: bool = typer.Option(False, "--json", help="JSON output"),
 ):
     """Dev garbage collector: node_modules, venvs, docker, caches."""
-    from modules.gc import run_gc
+    from macmon_core.gc import run_gc
     run_gc(scan=scan, clean=clean_gc, all_gc=all_gc, force_yes=yes, permanent=permanent, json_out=json_out)
 
 
@@ -190,7 +190,7 @@ def privacy(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ):
     """Privacy traces wiper."""
-    from modules.privacy import run_privacy
+    from macmon_core.privacy import run_privacy
     run_privacy(scan=scan, clean=clean_priv, full=full, force_yes=yes)
 
 
@@ -203,7 +203,7 @@ def health(
     json_out: bool = typer.Option(False, "--json", help="JSON output"),
 ):
     """Full system health check with /100 score."""
-    from modules.health import run_health
+    from macmon_core.health import run_health
     run_health(fix=fix, report=report, json_out=json_out)
 
 
@@ -220,7 +220,7 @@ def startup(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ):
     """Manage startup/login items."""
-    from modules.startup import run_startup
+    from macmon_core.startup import run_startup
     run_startup(
         list_items=list_items, disable=disable, enable=enable,
         delete=delete, broken=broken, audit=audit, force_yes=yes,
@@ -238,7 +238,7 @@ def uninstall(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ):
     """Full app uninstaller with leftover detection."""
-    from modules.uninstaller import run_uninstaller
+    from macmon_core.uninstaller import run_uninstaller
     run_uninstaller(
         app_name=app_name, scan_only=scan_only, list_apps=list_apps,
         permanent=permanent, force_yes=yes,
@@ -260,7 +260,7 @@ def dupes(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ):
     """Duplicate file finder."""
-    from modules.duplicates import run_dupes
+    from macmon_core.duplicates import run_dupes
     target_paths = paths or [str(Path.home())]
     run_dupes(
         paths=target_paths, scan=scan, auto_keep_newest=auto_keep_newest,
@@ -281,7 +281,7 @@ def bigfiles(
     json_out: bool = typer.Option(False, "--json", help="JSON output"),
 ):
     """Find large files."""
-    from modules.disk import find_big_files
+    from macmon_core.disk import find_big_files
     find_big_files(path=path, min_size=min_size, file_type=file_type, older=older, json_out=json_out)
 
 
@@ -293,7 +293,7 @@ def disk(
     json_out: bool = typer.Option(False, "--json", help="JSON output"),
 ):
     """Disk usage analyzer."""
-    from modules.disk import analyze_disk
+    from macmon_core.disk import analyze_disk
     analyze_disk(path=path, json_out=json_out)
 
 
@@ -307,14 +307,14 @@ def network(
     json_out: bool = typer.Option(False, "--json", help="JSON output"),
 ):
     """Network connections monitor."""
-    from modules.network import run_network
+    from macmon_core.network import run_network
     run_network(listening=listening, established=established, process=process, json_out=json_out)
 
 
 @app.command(name="flush-dns")
 def flush_dns():
     """Flush DNS cache."""
-    from modules.network import flush_dns_cache
+    from macmon_core.network import flush_dns_cache
     flush_dns_cache()
 
 
@@ -328,7 +328,7 @@ def auto(
     log: bool = typer.Option(False, "--log", help="Tail log"),
 ):
     """Background autopilot daemon."""
-    from modules.autopilot import run_autopilot
+    from macmon_core.autopilot import run_autopilot
     run_autopilot(start=start, stop=stop, status=status, log=log)
 
 
@@ -337,14 +337,14 @@ def auto(
 @app.command()
 def focus():
     """Enter focus mode: quit non-essentials, purge RAM."""
-    from modules.autopilot import enter_focus
+    from macmon_core.autopilot import enter_focus
     enter_focus()
 
 
 @app.command()
 def restore():
     """Restore apps killed by focus mode."""
-    from modules.autopilot import restore_focus
+    from macmon_core.autopilot import restore_focus
     restore_focus()
 
 
@@ -353,7 +353,7 @@ def restore():
 @app.command()
 def purge():
     """Purge inactive RAM (sudo purge)."""
-    from modules.processes import purge_ram
+    from macmon_core.processes import purge_ram
     purge_ram()
 
 
@@ -366,7 +366,7 @@ def report(
     save: bool = typer.Option(False, "--save", help="Save to file"),
 ):
     """Session report."""
-    from modules.health import run_report
+    from macmon_core.health import run_report
     run_report(full=full, tail=tail, save=save)
 
 
@@ -380,7 +380,7 @@ def config(
     edit: bool = typer.Option(False, "--edit", help="Open in $EDITOR"),
 ):
     """Manage configuration."""
-    from modules.config import show_config, init_config, set_config, edit_config
+    from macmon_core.config import show_config, init_config, set_config, edit_config
     if init:
         init_config()
     elif show:
@@ -413,7 +413,7 @@ def security(
     json_out: bool = typer.Option(False, "--json", help="JSON output"),
 ):
     """Network security, malware detection & remote access monitor."""
-    from modules.security import run_security
+    from macmon_core.security import run_security
     run_security(
         scan=scan, connections=connections, firewall=firewall,
         malware=malware, remote=remote, rules=rules,
@@ -442,7 +442,7 @@ def docker(
     json_out: bool = typer.Option(False, "--json", help="JSON output"),
 ):
     """Docker container, image & volume management."""
-    from modules.docker_mgr import run_docker
+    from macmon_core.docker_mgr import run_docker
     run_docker(
         status=status, containers=containers, images=images,
         volumes=volumes, networks=networks, prune=prune,
@@ -476,7 +476,7 @@ def sentinel(
     setup_purge: bool = typer.Option(False, "--setup-purge", help="Allow purge without a password so auto-purge runs unattended"),
 ):
     """MACMON-SENTINEL: ultra-light monitor + tactical console."""
-    from modules.sentinel import run_sentinel
+    from macmon_core.sentinel import run_sentinel
     run_sentinel(
         sample=sample, install_flag=install, uninstall_flag=uninstall,
         watch=watch, status=status, log=log, pause_flag=pause, resume_flag=resume,

@@ -1,4 +1,4 @@
-"""Tests for the size parsers in modules.disk, modules.gc and modules.sentinel.
+"""Tests for the size parsers in macmon_core.disk, macmon_core.gc and macmon_core.sentinel.
 
 Contracts verified against the source:
 - disk._parse_size is BINARY (1024-based) and accepts "50MB", "500K", bare
@@ -13,9 +13,9 @@ import re
 import pytest
 import typer
 
-from modules.disk import _parse_size
-from modules.gc import _parse_docker_size
-from modules.sentinel import _SIZE_FACTOR_GB, _SIZE_RE
+from macmon_core.disk import _parse_size
+from macmon_core.gc import _parse_docker_size
+from macmon_core.sentinel import _SIZE_FACTOR_GB, _SIZE_RE
 
 
 # -- disk._parse_size (binary, 1024-based) --------------------------------

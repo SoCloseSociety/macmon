@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `autopilot` daemon leaked a SQLite/WAL connection on any cycle where a rule raised (the connection was closed only on the success path); the rule body is now wrapped so the connection always closes.
 
 ### Changed
+- The internal package was renamed `modules/` -> `macmon_core/` so a `pip install` no longer drops a generic top-level `modules` package into site-packages (which would collide with any other project shipping the same name). The `macmon.py` entry point, the console script, and every command invocation are unchanged; verified end-to-end by building the wheel and running the installed `macmon` console script from a neutral directory.
 - Removed a dead `SUSPICIOUS_PROCESS_NAMES` import (and its no-op `try/except ImportError`) from the autopilot miner rule; the rule's own miner/pool-protocol keyword list is unchanged.
 
 ## [1.2.1] - 2026-08-26

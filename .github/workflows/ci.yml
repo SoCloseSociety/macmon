@@ -29,17 +29,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # compileall is cross-platform (a modules/*.py glob does not expand on Windows)
+      # compileall is cross-platform (a macmon_core/*.py glob does not expand on Windows)
       - name: Compile every module
-        run: python -m compileall -q macmon.py modules
+        run: python -m compileall -q macmon.py macmon_core
 
       - name: Import every module
         run: |
-          python -c "import modules.autopilot, modules.cleaner, modules.config, modules.dashboard, modules.disk, modules.docker_mgr, modules.duplicates, modules.gc, modules.health, modules.network, modules.platform_compat, modules.privacy, modules.processes, modules.security, modules.sentinel, modules.startup, modules.uninstaller, modules.utils; print('all modules import OK')"
+          python -c "import macmon_core.autopilot, macmon_core.cleaner, macmon_core.config, macmon_core.dashboard, macmon_core.disk, macmon_core.docker_mgr, macmon_core.duplicates, macmon_core.gc, macmon_core.health, macmon_core.network, macmon_core.platform_compat, macmon_core.privacy, macmon_core.processes, macmon_core.security, macmon_core.sentinel, macmon_core.startup, macmon_core.uninstaller, macmon_core.utils; print('all modules import OK')"
 
       - name: Platform layer sanity
         run: |
-          python -c "from modules.platform_compat import OS_NAME, load_average, cache_dirs, temp_dirs, dns_flush_cmds, require_os; print('OS:', OS_NAME); print('load:', load_average()); print('cache:', [str(p) for p in cache_dirs()]); print('temp:', [str(p) for p in temp_dirs()]); print('dns:', dns_flush_cmds()); print('gate:', require_os('macOS'))"
+          python -c "from macmon_core.platform_compat import OS_NAME, load_average, cache_dirs, temp_dirs, dns_flush_cmds, require_os; print('OS:', OS_NAME); print('load:', load_average()); print('cache:', [str(p) for p in cache_dirs()]); print('temp:', [str(p) for p in temp_dirs()]); print('dns:', dns_flush_cmds()); print('gate:', require_os('macOS'))"
 
       # Regression gate: psutil's Windows load sampler reports all-zero until it
       # warms up, which a one-shot CLI never does -- load must still be real.
@@ -87,4 +87,4 @@ jobs:
           python-version: "3.13"
       - run: pip install pyflakes
       # Report only: unused imports and undefined names, not a hard gate yet
-      - run: python -m pyflakes macmon.py modules/ || true
+      - run: python -m pyflakes macmon.py macmon_core/ || true

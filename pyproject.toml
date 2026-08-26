@@ -54,15 +54,15 @@ macmon = "macmon:app"
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
 
-# Flat layout: root-level macmon.py (entry module) + the modules/ package.
+# Flat layout: root-level macmon.py (entry module) + the macmon_core/ package.
 # Hatchling cannot auto-detect this shape, so include both explicitly.
 [tool.hatch.build.targets.wheel]
-include = ["macmon.py", "modules"]
+include = ["macmon.py", "macmon_core"]
 
 [tool.hatch.build.targets.sdist]
 include = [
     "macmon.py",
-    "modules",
+    "macmon_core",
     "README.md",
     "LICENSE",
     "requirements.txt",

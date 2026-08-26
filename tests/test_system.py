@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from modules import security, gc as gcmod, uninstaller, health
+from macmon_core import security, gc as gcmod, uninstaller, health
 
 
 # ── security._parse_lsof_line ────────────────────────────────────────────
@@ -105,22 +105,22 @@ class TestRuleIps:
 
 class TestPipCacheDirs:
     def test_macos(self, monkeypatch):
-        monkeypatch.setattr("modules.platform_compat.IS_MAC", True)
-        monkeypatch.setattr("modules.platform_compat.IS_WINDOWS", False)
+        monkeypatch.setattr("macmon_core.platform_compat.IS_MAC", True)
+        monkeypatch.setattr("macmon_core.platform_compat.IS_WINDOWS", False)
         out = gcmod._pip_cache_dirs()
         assert len(out) == 1 and out[0].parts[-2:] == ("Library", "Caches") or "pip" in out[0].name
 
     def test_windows(self, monkeypatch):
-        monkeypatch.setattr("modules.platform_compat.IS_MAC", False)
-        monkeypatch.setattr("modules.platform_compat.IS_WINDOWS", True)
+        monkeypatch.setattr("macmon_core.platform_compat.IS_MAC", False)
+        monkeypatch.setattr("macmon_core.platform_compat.IS_WINDOWS", True)
         monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\x\AppData\Local")
         out = gcmod._pip_cache_dirs()
         assert len(out) == 1
         assert "pip" in str(out[0]).lower() and "Cache" in str(out[0])
 
     def test_linux(self, monkeypatch):
-        monkeypatch.setattr("modules.platform_compat.IS_MAC", False)
-        monkeypatch.setattr("modules.platform_compat.IS_WINDOWS", False)
+        monkeypatch.setattr("macmon_core.platform_compat.IS_MAC", False)
+        monkeypatch.setattr("macmon_core.platform_compat.IS_WINDOWS", False)
         out = gcmod._pip_cache_dirs()
         assert len(out) == 1 and out[0].name == "pip"
 

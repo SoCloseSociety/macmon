@@ -24,13 +24,13 @@ from pathlib import Path
 import pytest
 
 # Safety net in case conftest.py's sys.path setup changes: make
-# `from modules.X import ...` work from the repo root regardless.
+# `from macmon_core.X import ...` work from the repo root regardless.
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from modules import cleaner, dashboard, duplicates, gc as gc_mod  # noqa: E402
-from modules.duplicates import _keep_indices  # noqa: E402
+from macmon_core import cleaner, dashboard, duplicates, gc as gc_mod  # noqa: E402
+from macmon_core.duplicates import _keep_indices  # noqa: E402
 
 
 # ── 1. Dashboard ESC-sequence draining (HIGH: keys firing actions) ──────

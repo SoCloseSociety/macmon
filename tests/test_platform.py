@@ -1,4 +1,4 @@
-"""Tests for modules.platform_compat.
+"""Tests for macmon_core.platform_compat.
 
 These run on macOS, Ubuntu and Windows CI. OS-specific branches are always
 exercised by monkeypatching IS_MAC / IS_WINDOWS / IS_LINUX / OS_NAME on the
@@ -10,7 +10,7 @@ from pathlib import Path
 import psutil
 import pytest
 
-import modules.platform_compat as pc
+import macmon_core.platform_compat as pc
 
 
 def _force(monkeypatch, *, mac=False, windows=False, linux=False, os_name=None):

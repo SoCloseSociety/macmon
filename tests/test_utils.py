@@ -1,11 +1,11 @@
-"""Tests for the pure functions in modules.utils.
+"""Tests for the pure functions in macmon_core.utils.
 
 Everything here is platform-independent: no subprocess, no network, no
 filesystem access beyond the module import itself.
 """
 import pytest
 
-from modules.utils import (
+from macmon_core.utils import (
     _applescript_escape,
     categorize_process,
     format_duration,
