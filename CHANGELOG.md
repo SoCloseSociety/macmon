@@ -8,8 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- A pytest test suite (123 tests, hermetic: no network, no live subprocess, tmp_path + monkeypatch only) covering the pure formatters, the cross-platform layer, the size parsers, the security helpers (lsof field-anchoring, suspicious-port classification, pf IP validation and exact-token rule matching), the gc cache/mtime helpers, and the audited safety behaviors as regressions (dashboard ESC-drain, `_trash_or_rm` never escalating a Trash failure to permanent deletion, the duplicates keeper, the Python 3.11 guard).
+- A pytest test suite (127 tests, hermetic: no network, no live subprocess, tmp_path + monkeypatch only) covering the pure formatters, the cross-platform layer, the size parsers, the security helpers (lsof field-anchoring, suspicious-port classification, pf IP validation and exact-token rule matching), the gc cache/mtime helpers, and the audited safety behaviors as regressions (dashboard ESC-drain, `_trash_or_rm` never escalating a Trash failure to permanent deletion, the duplicates keeper, the Python 3.11 guard).
 - CI runs the suite on macOS, Ubuntu and Windows (Python 3.11 and 3.13); a `[test]` extra (`pip install -e ".[test]"`) pulls in pytest.
+
+### Fixed
+- `security` Docker audit missed the most common root container: an implicit-root container reports an empty `Config.User`, and the space-split dropped that trailing empty field, so the "ROOT USER" finding never fired for it. The inspect fields are now pipe-delimited and an empty user is treated as root.
+- `uninstaller` permanent delete reported success (and counted the freed bytes) even when `rmtree(ignore_errors=True)` left the path behind; it now returns whether the path is actually gone, matching the other modules' `_trash_or_rm`.
+- `health` battery check fabricated a "100% / 0 cycles" pass on Windows/Linux laptops (cycle count and capacity come from macOS `system_profiler` only); it now abstains off-macOS.
+- `sweep` had two latent off-macOS crashes: `_clean_dead_ports` used the Unix-only `signal.SIGKILL` (now falls back to `SIGTERM`), and `_kill_orphans` called the POSIX-only `psutil.Process.terminal()` (now guarded).
+- `autopilot` daemon leaked a SQLite/WAL connection on any cycle where a rule raised (the connection was closed only on the success path); the rule body is now wrapped so the connection always closes.
+
+### Changed
+- Removed a dead `SUSPICIOUS_PROCESS_NAMES` import (and its no-op `try/except ImportError`) from the autopilot miner rule; the rule's own miner/pool-protocol keyword list is unchanged.
 
 ## [1.2.1] - 2026-08-26
 

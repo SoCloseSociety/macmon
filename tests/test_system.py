@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from modules import security, gc as gcmod
+from modules import security, gc as gcmod, uninstaller, health
 
 
 # ── security._parse_lsof_line ────────────────────────────────────────────
@@ -148,3 +148,39 @@ class TestLatestMtime:
         real.write_text("x")
         latest = gcmod._latest_mtime([tmp_path / "ghost", real])
         assert latest == pytest.approx(real.stat().st_mtime)
+
+
+# ── uninstaller._trash_or_rm (permanent must not over-report success) ─────
+
+class TestTrashOrRmPermanent:
+    def test_permanent_delete_of_real_file_succeeds(self, tmp_path):
+        f = tmp_path / "gone.txt"
+        f.write_text("x")
+        assert uninstaller._trash_or_rm(f, permanent=True) is True
+        assert not f.exists()
+
+    def test_permanent_delete_returns_false_when_removal_fails(self, tmp_path, monkeypatch):
+        # rmtree(ignore_errors=True) swallows failures; the function must still
+        # report False (not True) when the path survives, or the caller counts
+        # phantom freed bytes.
+        d = tmp_path / "stuck"
+        d.mkdir()
+        monkeypatch.setattr(uninstaller.shutil, "rmtree", lambda *a, **k: None)
+        assert uninstaller._trash_or_rm(d, permanent=True) is False
+        assert d.exists()
+
+
+# ── health._check_battery (no fabricated all-clear off-macOS) ─────────────
+
+class TestCheckBattery:
+    def test_returns_none_off_mac_even_with_a_battery(self, monkeypatch):
+        # A Windows/Linux laptop has a real battery, but cycle count / capacity
+        # come from macOS system_profiler only. Off-mac the check must abstain
+        # rather than report a fabricated "100% / 0 cycles" pass.
+        monkeypatch.setattr(health, "IS_MAC", False)
+        monkeypatch.setattr(health.psutil, "sensors_battery", lambda: object())
+        assert health._check_battery() is None
+
+    def test_returns_none_when_no_battery(self, monkeypatch):
+        monkeypatch.setattr(health.psutil, "sensors_battery", lambda: None)
+        assert health._check_battery() is None

@@ -314,6 +314,11 @@ def _check_battery():
     bat = psutil.sensors_battery()
     if not bat:
         return None
+    # Cycle count and maximum capacity come from system_profiler (macOS only).
+    # Off-mac we cannot read them, so skip the check rather than report a
+    # fabricated "100% / 0 cycles" all-clear on a Windows/Linux laptop.
+    if not IS_MAC:
+        return None
     out, _, rc = run_cmd(["system_profiler", "SPPowerDataType"], timeout=5)
     cycles = 0
     health = 100

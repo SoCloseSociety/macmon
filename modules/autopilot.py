@@ -188,7 +188,15 @@ def _evaluate_rules(cfg: dict):
     )
 
     db = get_db()
+    try:
+        _apply_rules(db, cfg, mem, disk_free_gb, zombies, orphan_count)
+    finally:
+        # Guarantee the connection closes even if a rule raises; the daemon
+        # loop's broad `except` would otherwise leak a WAL handle every cycle.
+        db.close()
 
+
+def _apply_rules(db, cfg, mem, disk_free_gb, zombies, orphan_count):
     # Rule: RAM Critical
     if mem.percent > 88:
         if _can_fire(db, "RAM Critical", 5):
@@ -271,8 +279,6 @@ def _evaluate_rules(cfg: dict):
 
     # ── Security Rules ──────────────────────────────────────────────────
     _evaluate_security_rules(db, cfg)
-
-    db.close()
 
 
 def _evaluate_thermal_rules(db, cfg: dict):
@@ -406,25 +412,21 @@ def _evaluate_security_rules(db, cfg: dict):
     except ImportError:
         pass
 
-    # Rule: Detect crypto miners (high CPU + suspicious name/cmdline)
-    try:
-        from .security import SUSPICIOUS_PROCESS_NAMES
-        for p in psutil.process_iter(["pid", "name", "cpu_percent", "cmdline"]):
-            try:
-                cpu = p.info.get("cpu_percent") or 0
-                if cpu > 80:
-                    pname = p.info["name"].lower()
-                    cmdline = " ".join(str(c) for c in (p.info.get("cmdline") or [])).lower()
-                    if any(kw in pname or kw in cmdline for kw in ["xmrig", "minerd", "cryptonight", "stratum+tcp"]):
-                        if _can_fire(db, f"Crypto Miner {p.info['pid']}", 5):
-                            msg = f"Possible crypto miner: {p.info['name']} (PID {p.info['pid']}, CPU {cpu:.0f}%)"
-                            _autopilot_log(msg)
-                            send_notification("macmon SECURITY", msg, notify_style)
-                            _record_fire(db, f"Crypto Miner {p.info['pid']}", msg, 5)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-    except ImportError:
-        pass
+    # Rule: Detect crypto miners (high CPU + miner name or pool protocol in cmdline)
+    for p in psutil.process_iter(["pid", "name", "cpu_percent", "cmdline"]):
+        try:
+            cpu = p.info.get("cpu_percent") or 0
+            if cpu > 80:
+                pname = p.info["name"].lower()
+                cmdline = " ".join(str(c) for c in (p.info.get("cmdline") or [])).lower()
+                if any(kw in pname or kw in cmdline for kw in ["xmrig", "minerd", "cryptonight", "stratum+tcp"]):
+                    if _can_fire(db, f"Crypto Miner {p.info['pid']}", 5):
+                        msg = f"Possible crypto miner: {p.info['name']} (PID {p.info['pid']}, CPU {cpu:.0f}%)"
+                        _autopilot_log(msg)
+                        send_notification("macmon SECURITY", msg, notify_style)
+                        _record_fire(db, f"Crypto Miner {p.info['pid']}", msg, 5)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
 
     # Rule: Detect processes running from /tmp
     for p in psutil.process_iter(["pid", "name", "exe"]):

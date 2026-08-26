@@ -394,7 +394,8 @@ def _kill_orphans(force_yes: bool = False) -> int:
             # ppid==1 is not enough on macOS: launchd parents all GUI apps and
             # LaunchAgents. Require no controlling terminal and an executable
             # outside /Applications and /System before calling it an orphan.
-            if p.terminal() is not None:
+            # psutil.Process.terminal() is POSIX-only; skip the check off-Unix.
+            if hasattr(p, "terminal") and p.terminal() is not None:
                 continue
             exe = p.exe()
             if not exe or exe.startswith(("/Applications/", "/System/")):
@@ -465,9 +466,12 @@ def _clean_dead_ports(force_yes: bool = False) -> int:
 
     if confirm_action(f"Kill {len(dead)} dead port holders?", force_yes=force_yes):
         killed = 0
+        # SIGKILL is Unix-only; on Windows os.kill falls back to SIGTERM
+        # (TerminateProcess), which is the strongest signal available there.
+        kill_sig = getattr(signal, "SIGKILL", signal.SIGTERM)
         for d in dead:
             try:
-                os.kill(d["pid"], signal.SIGKILL)
+                os.kill(d["pid"], kill_sig)
                 killed += 1
             except (ProcessLookupError, PermissionError):
                 pass

@@ -389,18 +389,22 @@ def _docker_security_scan():
                 cid = parts[0]
                 name = parts[1]
                 # Check if running as root
+                # Pipe-delimit the fields: .Config.User is empty for the common
+                # implicit-root case, and a space split would drop that trailing
+                # empty token (masking the very containers this check flags).
                 inspect_out, _, _ = run_cmd([
                     "docker", "inspect", "--format",
-                    "{{.HostConfig.Privileged}} {{.HostConfig.NetworkMode}} {{.Config.User}}",
+                    "{{.HostConfig.Privileged}}|{{.HostConfig.NetworkMode}}|{{.Config.User}}",
                     cid,
                 ], timeout=5)
                 if inspect_out:
-                    priv_parts = inspect_out.strip().split()
+                    priv_parts = inspect_out.strip().split("|")
                     if len(priv_parts) >= 1 and priv_parts[0] == "true":
                         findings.append(f"[red]PRIVILEGED[/] container: {name}")
                     if len(priv_parts) >= 2 and priv_parts[1] == "host":
                         findings.append(f"[yellow]HOST NETWORK[/] container: {name}")
-                    if len(priv_parts) >= 3 and (not priv_parts[2] or priv_parts[2] == "root"):
+                    # Empty user == implicit root (Docker's default), or "root"/"0".
+                    if len(priv_parts) >= 3 and priv_parts[2] in ("", "root", "0"):
                         findings.append(f"[yellow]ROOT USER[/] container: {name}")
 
     # Check for exposed ports

@@ -25,7 +25,9 @@ def _trash_or_rm(path: Path, permanent: bool = False) -> bool:
             shutil.rmtree(path, ignore_errors=True)
         else:
             path.unlink(missing_ok=True)
-        return True
+        # ignore_errors/missing_ok swallow failures, so confirm the path is
+        # actually gone before reporting success (caller counts freed bytes).
+        return not path.exists()
     if send2trash:
         try:
             send2trash(str(path))
