@@ -8,7 +8,17 @@ import time
 
 import pytest
 
-from macmon_core import security, gc as gcmod, uninstaller, health
+import os
+
+from macmon_core import (
+    security,
+    gc as gcmod,
+    uninstaller,
+    health,
+    cleaner,
+    duplicates,
+    processes,
+)
 
 
 # ── security._parse_lsof_line ────────────────────────────────────────────
@@ -137,7 +147,6 @@ class TestLatestMtime:
         old.write_text("a")
         new.write_text("b")
         past = time.time() - 10000
-        import os
         os.utime(old, (past, past))
         latest = gcmod._latest_mtime([old, new])
         assert latest == pytest.approx(new.stat().st_mtime)
@@ -227,3 +236,105 @@ class TestCheckDockerDangling:
         monkeypatch.setattr(gcmod, "run_cmd", self._fake_run_cmd(""))
         results = gcmod._check_docker()
         assert not any(r["name"].startswith("Docker dangling") for r in results)
+
+
+# ── _trash_or_rm contract across ALL modules that define it ──────────────
+# The core delete guardrail: (1) Trash-first must NEVER silently escalate to
+# permanent deletion when Trash is unavailable; (2) a permanent delete must
+# report True only when the path is actually gone, never an unverified success.
+
+@pytest.mark.parametrize("mod", [cleaner, gcmod, uninstaller, duplicates],
+                         ids=["cleaner", "gc", "uninstaller", "duplicates"])
+class TestTrashOrRmContract:
+    def test_permanent_delete_of_real_file_verified(self, mod, tmp_path):
+        f = tmp_path / "junk.txt"
+        f.write_text("x")
+        assert mod._trash_or_rm(f, permanent=True) is True
+        assert not f.exists()
+
+    def test_trash_unavailable_never_escalates_to_permanent(self, mod, tmp_path, monkeypatch):
+        # With send2trash missing and permanent=False, the file must be LEFT
+        # ALONE (skipped) -- never quietly rm'd. This is the guardrail that
+        # keeps a Trash failure from turning into irreversible data loss.
+        monkeypatch.setattr(mod, "send2trash", None)
+        f = tmp_path / "keep.txt"
+        f.write_text("precious")
+        assert mod._trash_or_rm(f, permanent=False) is False
+        assert f.exists()  # untouched
+
+    def test_permanent_reports_false_when_path_survives(self, mod, tmp_path, monkeypatch):
+        # Simulate a delete that cannot remove the path: it must return False,
+        # not a fabricated True (which would let a caller count phantom freed
+        # bytes / report a success that did not happen).
+        if hasattr(mod, "shutil"):
+            monkeypatch.setattr(mod.shutil, "rmtree", lambda *a, **k: None)
+        stuck = tmp_path / "stuck_dir"
+        stuck.mkdir()
+        # A directory can't be removed via unlink() either, so the file-only
+        # helpers also correctly report False here.
+        assert mod._trash_or_rm(stuck, permanent=True) is False
+        assert stuck.exists()
+
+
+# ── uninstaller._valid_app_name (path-traversal guard) ────────────────────
+
+class TestValidAppName:
+    @pytest.mark.parametrize("name", ["Google Chrome", "VLC", "1Password", "Slack", "zoom.us"])
+    def test_accepts_real_app_names(self, name):
+        assert uninstaller._valid_app_name(name) is True
+
+    @pytest.mark.parametrize("bad", [
+        ".", "..", "...", " . ", "", "   ",
+        "../Applications", "a/b", "/Applications", "..\\x", "x\x00y",
+    ])
+    def test_rejects_paths_and_traversal(self, bad):
+        # These are the inputs that would resolve `/Applications/<name>` to
+        # /Applications or / and let --permanent -y rmtree them.
+        assert uninstaller._valid_app_name(bad) is False
+
+
+# ── processes._is_protected_target (kill/suspend blacklist) ───────────────
+
+class TestIsProtectedTarget:
+    @pytest.mark.parametrize("pid", [0, 1])
+    def test_pid_0_and_1_are_protected(self, pid):
+        assert processes._is_protected_target(pid, "anything") is True
+
+    def test_self_and_parent_shell_protected(self):
+        assert processes._is_protected_target(os.getpid(), "python") is True
+        assert processes._is_protected_target(os.getppid(), "zsh") is True
+
+    @pytest.mark.parametrize("name", [
+        "launchd", "kernel_task", "WindowServer", "loginwindow",
+        "Finder", "Dock", "SystemUIServer", "FINDER",
+    ])
+    def test_system_critical_names_protected(self, name):
+        # High, safe PID so only the name can be the reason it is protected.
+        assert processes._is_protected_target(999999, name) is True
+
+    def test_ordinary_process_not_protected(self):
+        assert processes._is_protected_target(999999, "node") is False
+        assert processes._is_protected_target(999999, "Google Chrome") is False
+
+
+# ── sentinel fleet-trim config clamps (busy-session guard can't be disabled) ─
+
+class TestSentinelConfigClamps:
+    def test_keep_never_below_one(self):
+        from macmon_core import sentinel
+        assert sentinel._sentinel_keep({"fleet_keep": 0}) == 1
+        assert sentinel._sentinel_keep({"fleet_keep": -5}) == 1
+        assert sentinel._sentinel_keep({"fleet_keep": 3}) == 3
+        assert sentinel._sentinel_keep({}) == 4  # default
+
+    def test_idle_never_below_one(self):
+        from macmon_core import sentinel
+        # idle_samples=0 would make every session instantly trimmable.
+        assert sentinel._sentinel_idle({"idle_samples": 0}) == 1
+        assert sentinel._sentinel_idle({"idle_samples": -1}) == 1
+        assert sentinel._sentinel_idle({"idle_samples": 20}) == 20
+
+    def test_garbage_values_fall_back_to_default(self):
+        from macmon_core import sentinel
+        assert sentinel._sentinel_keep({"fleet_keep": "abc"}) == 4
+        assert sentinel._sentinel_idle({"idle_samples": None}) == 10

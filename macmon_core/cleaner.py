@@ -45,7 +45,9 @@ def _trash_or_rm(path: Path, permanent: bool = False) -> bool:
                 shutil.rmtree(path)
             else:
                 path.unlink(missing_ok=True)
-            return True
+            # Honor the contract in this function's docstring: True only when
+            # the path is actually gone, never an unverified success.
+            return not path.exists()
         if send2trash:
             try:
                 send2trash(str(path))

@@ -11,7 +11,6 @@ Design goals: precise, surgical, near-zero cost.
 
 State lives under ~/.macmon/ (metrics.jsonl, alerts, config).
 """
-import getpass
 import json
 import os
 import re
@@ -275,6 +274,24 @@ def _update_idle_streaks(sessions, astate):
     return cur
 
 
+def _sentinel_keep(cfg) -> int:
+    """fleet_keep clamped to >= 1. Keeping 0 sessions would protect nothing --
+    the guard that spares the session you are using must never be config'd off."""
+    try:
+        return max(1, int(cfg.get("fleet_keep", 4)))
+    except (TypeError, ValueError):
+        return 4
+
+
+def _sentinel_idle(cfg) -> int:
+    """idle_samples clamped to >= 1. A value of 0 would make every session
+    instantly eligible for trimming, disabling the busy-session protection."""
+    try:
+        return max(1, int(cfg.get("idle_samples", 10)))
+    except (TypeError, ValueError):
+        return 10
+
+
 def _trim_fleet(sessions, streaks, keep, idle_samples, force=False):
     """Close idle sessions beyond `keep`. Protects the `keep` MOST RECENTLY
     ACTIVE sessions (lowest idle streak, newest as tie-break) -- so the session
@@ -424,7 +441,7 @@ def _remediate(vm, sw, cfg, astate, now, sessions, streaks, oll):
             # never be written and every cooldown would be lost (alert spam).
             pass
     if cfg.get("auto_trim_fleet") and now - astate.get("_trim", 0) > 900:
-        closed = _trim_fleet(sessions, streaks, int(cfg["fleet_keep"]), int(cfg["idle_samples"]))
+        closed = _trim_fleet(sessions, streaks, _sentinel_keep(cfg), _sentinel_idle(cfg))
         if closed:
             astate["_trim"] = now
             done.append(("auto_trim", f"Closed {len(closed)} idle AI session(s) (RAM critical) -- resumable"))
@@ -916,8 +933,13 @@ def setup_purge():
     #   "neo ALL=(ALL) NOPASSWD: ALL #"
     # would comment out the rest of the line and grant permanent full root --
     # visudo validates syntax, so it accepts that injection happily.
+    # pwd.getpwuid(os.getuid()) reads the passwd database by real UID and cannot
+    # be spoofed via $USER/$LOGNAME the way getpass.getuser() can. pwd is
+    # Unix-only, imported here (past the macOS gate) so the module still imports
+    # on Windows.
     try:
-        user = getpass.getuser()
+        import pwd
+        user = pwd.getpwuid(os.getuid()).pw_name
     except Exception:
         user = ""
     if not user:
@@ -972,8 +994,8 @@ def manual_trim():
     # _trim_fleet can NEVER close it (and ranks it first for protection).
     # Idle sessions get a huge streak so they are eligible beyond `keep`.
     streaks = {str(s["pid"]): (0 if s["cpu"] >= 1.0 else 10**6) for s in sessions}
-    closed = _trim_fleet(sessions, streaks, int(cfg["fleet_keep"]), 1)
-    console.print(Text(f"Closed {len(closed)} idle AI session(s), kept {int(cfg['fleet_keep'])}. Resumable via --resume.",
+    closed = _trim_fleet(sessions, streaks, _sentinel_keep(cfg), 1)
+    console.print(Text(f"Closed {len(closed)} idle AI session(s), kept {_sentinel_keep(cfg)}. Resumable via --resume.",
                        style=GREEN if closed else DIM))
 
 

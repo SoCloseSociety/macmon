@@ -73,10 +73,13 @@ def kill(
 
 
 @app.command()
-def suspend(target: str = typer.Argument(..., help="Process name or PID")):
+def suspend(
+    target: str = typer.Argument(..., help="Process name or PID"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
     """Suspend (SIGSTOP) a process."""
     from macmon_core.processes import suspend_process
-    suspend_process(target)
+    suspend_process(target, force_yes=yes)
 
 
 @app.command()

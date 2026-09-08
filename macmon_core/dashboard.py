@@ -1,5 +1,6 @@
 """Live system dashboard for macmon -- rich visual TUI."""
 
+import os
 import select
 import subprocess
 import sys
@@ -728,15 +729,20 @@ def _get_key_nonblocking():
                 return None
         return None
     if select.select([sys.stdin], [], [], 0.0)[0]:  # Unix
-        ch = sys.stdin.read(1)
-        if ch == "\x1b":
+        fd = sys.stdin.fileno()
+        ch = os.read(fd, 1)
+        if ch == b"\x1b":
             # Arrow/End/Delete keys arrive as multi-byte ESC sequences (e.g.
             # Down = ESC [ B, End = ESC [ F). Drain the trailing bytes so the
             # final byte cannot fire an action shortcut, and ignore the key.
+            # os.read shares the kernel buffer with select(), so the trailing
+            # bytes are actually visible here -- a buffered sys.stdin.read(1)
+            # would swallow them into userspace and leak the last byte as a
+            # fake shortcut on the next poll (End -> Focus mode, etc.).
             while select.select([sys.stdin], [], [], 0.0)[0]:
-                sys.stdin.read(1)
+                os.read(fd, 1)
             return None
-        return ch
+        return ch.decode("utf-8", "ignore") or None
     return None
 
 
@@ -751,14 +757,16 @@ def _read_one_key():
             return ch.decode("utf-8", "ignore")
         except Exception:
             return ""
-    ch = sys.stdin.read(1)
-    if ch == "\x1b":
+    fd = sys.stdin.fileno()
+    ch = os.read(fd, 1)
+    if ch == b"\x1b":
         # Drain the rest of the ESC sequence so its final byte does not leak
-        # into the next nonblocking poll as a fake action shortcut.
+        # into the next nonblocking poll as a fake action shortcut. os.read
+        # (not buffered sys.stdin.read) keeps select() and the read in sync.
         while select.select([sys.stdin], [], [], 0.0)[0]:
-            sys.stdin.read(1)
+            os.read(fd, 1)
         return ""
-    return ch
+    return ch.decode("utf-8", "ignore")
 
 
 def _run_action_overlay(live, action_name, action_fn):

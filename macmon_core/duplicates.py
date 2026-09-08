@@ -31,9 +31,9 @@ def _trash_or_rm(path: Path, permanent: bool = False) -> bool:
     if permanent:
         try:
             path.unlink(missing_ok=True)
-            return True
         except OSError:
             return False
+        return not path.exists()
     if send2trash:
         try:
             send2trash(str(path))

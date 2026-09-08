@@ -58,6 +58,10 @@ def run_uninstaller(
         console.print("[yellow]Usage: macmon uninstall <AppName> or macmon uninstall --list[/]")
         return
 
+    if not _valid_app_name(app_name):
+        console.print(f"[red]Invalid app name {app_name!r}: pass a plain application name, not a path.[/]")
+        return
+
     console.print(Panel(f"[bold]macmon uninstall[/] -- {app_name}", border_style="red"))
 
     leftovers = _find_leftovers(app_name)
@@ -108,6 +112,26 @@ def run_uninstaller(
 
         console.print(f"\n[green bold]Uninstalled {app_name}: {deleted} items removed, {format_size(freed)} freed[/]")
         log_action("uninstall", f"{app_name}: {deleted} items, {format_size(freed)}")
+
+
+def _valid_app_name(app_name: str) -> bool:
+    """Reject anything that is a path rather than a bare application name.
+
+    Without this, `macmon uninstall .` resolves `/Applications/.` to
+    `/Applications` and `macmon uninstall ..` resolves it to `/` -- which
+    `--permanent -y` would then rmtree. A real app name never contains a path
+    separator or a `..` segment.
+    """
+    if not app_name or not app_name.strip():
+        return False
+    if "/" in app_name or "\\" in app_name or "\x00" in app_name:
+        return False
+    if ".." in app_name:
+        return False
+    # ".", "...", " . " etc. -- nothing but dots/spaces is not a name.
+    if app_name.strip(". ") == "":
+        return False
+    return True
 
 
 def _matches_app(entry_name: str, name_variants: list[str]) -> bool:

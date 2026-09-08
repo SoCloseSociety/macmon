@@ -144,20 +144,38 @@ def _print_tree(procs: list[dict]):
 
 # ── Kill / Suspend / Resume / Nice ───────────────────────────────────────
 
+# System-critical processes that must never be a kill/suspend/nice target,
+# even by an exact or substring name match.
+_PROTECTED_NAMES = {
+    "launchd", "kernel_task", "windowserver", "loginwindow",
+    "finder", "dock", "systemuiserver",
+}
+
+
+def _is_protected_target(pid: int, name: str) -> bool:
+    """True if this process must never be signalled: PID 0/1, macmon itself,
+    macmon's own parent shell, or a system-critical process by name."""
+    if pid <= 1 or pid == os.getpid() or pid == os.getppid():
+        return True
+    return (name or "").lower() in _PROTECTED_NAMES
+
+
 def _find_process(target: str) -> list[psutil.Process]:
-    """Find process by PID or name. Never matches macmon itself."""
+    """Find process by PID or name. Never matches macmon itself, its parent
+    shell, PID 0/1, or a system-critical process (see _PROTECTED_NAMES)."""
     matches = []
     try:
         pid = int(target)
-        if pid != os.getpid():
-            try:
-                matches.append(psutil.Process(pid))
-            except psutil.NoSuchProcess:
-                pass
+        try:
+            p = psutil.Process(pid)
+            if not _is_protected_target(pid, p.name()):
+                matches.append(p)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
     except ValueError:
         for p in psutil.process_iter(["pid", "name"]):
             try:
-                if p.info["pid"] == os.getpid():
+                if _is_protected_target(p.info["pid"], p.info["name"]):
                     continue
                 if target.lower() in (p.info["name"] or "").lower():
                     matches.append(p)
@@ -210,13 +228,21 @@ def kill_process(target: str, category: str = None, force_yes: bool = False):
             console.print(f"[red]Error: {e}[/]")
 
 
-def suspend_process(target: str):
+def suspend_process(target: str, force_yes: bool = False):
     matches = _find_process(target)
+    if not matches:
+        console.print(f"[yellow]No process found matching '{target}'[/]")
+        return
     for p in matches:
         try:
-            p.suspend()
-            console.print(f"[yellow]Suspended {p.name()} (PID {p.pid})[/]")
-            log_action("suspend", f"PID {p.pid}")
+            name = p.name()
+            pid = p.pid
+            # SIGSTOP freezes the app until resumed -- confirm per match so a
+            # short substring can't silently freeze a pile of processes.
+            if confirm_action(f"Suspend {name} (PID {pid})?", force_yes=force_yes):
+                p.suspend()
+                console.print(f"[yellow]Suspended {name} (PID {pid})[/]")
+                log_action("suspend", f"PID {pid}")
         except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
             console.print(f"[red]Error: {e}[/]")
 
@@ -398,7 +424,13 @@ def _kill_orphans(force_yes: bool = False) -> int:
             if hasattr(p, "terminal") and p.terminal() is not None:
                 continue
             exe = p.exe()
-            if not exe or exe.startswith(("/Applications/", "/System/")):
+            # Also spare package-manager-managed services (Homebrew ollama,
+            # node, etc.) and MacPorts/Nix -- these are launchd/brew-services
+            # managed, not stray orphans, and killing them breaks the fleet.
+            if not exe or exe.startswith((
+                "/Applications/", "/System/",
+                "/opt/homebrew/", "/usr/local/", "/opt/local/", "/nix/",
+            )):
                 continue
             orphans.append({
                 **info,

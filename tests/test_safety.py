@@ -16,6 +16,8 @@ filesystem is only touched under tmp_path. Cross-platform (macOS, Linux,
 Windows): OS-specific branches are forced via monkeypatch.
 """
 
+import os
+import select
 import sys
 import types
 from collections import deque
@@ -36,79 +38,82 @@ from macmon_core.duplicates import _keep_indices  # noqa: E402
 # ── 1. Dashboard ESC-sequence draining (HIGH: keys firing actions) ──────
 
 
-class _FakeStdin:
-    """stdin stand-in: read(1) pops one char from a queue."""
-
-    def __init__(self, chars):
-        self.queue = deque(chars)
-
-    def read(self, n):
-        assert n == 1, "dashboard key readers must read one char at a time"
-        if not self.queue:
-            raise AssertionError(
-                "read() called on empty queue -- would block forever on a real TTY"
-            )
-        return self.queue.popleft()
+# A REAL pty is the only faithful harness here: the earlier _FakeStdin made
+# select() mirror a queue, which is NOT how a buffered TTY behaves and gave
+# false assurance. On a real terminal the readers must use os.read (sharing the
+# kernel buffer with select), or ESC-sequence tail bytes leak as fake shortcuts.
+_PTY_AVAILABLE = hasattr(os, "openpty") and sys.platform != "win32"
 
 
-def _fake_unix_tty(monkeypatch, chars):
-    """Force dashboard onto the Unix code path with a scripted stdin.
+def _wait_readable(fd, timeout=1.0):
+    """Wait (without consuming) until fd has bytes -- removes the pty write/read
+    race so the nonblocking-poll assertions are deterministic."""
+    return bool(select.select([fd], [], [], timeout)[0])
 
-    Returns the fake stdin so tests can feed more keys / inspect the queue.
-    """
-    fake_stdin = _FakeStdin(chars)
 
-    class _FakeSelectModule:
-        @staticmethod
-        def select(rlist, wlist, xlist, timeout=None):
-            # stdin is "readable" exactly while the scripted queue is non-empty
-            return (list(rlist), [], []) if fake_stdin.queue else ([], [], [])
-
+@pytest.fixture
+def pty_dashboard(monkeypatch):
+    """Wire the dashboard's Unix key readers to a real PTY in cbreak mode."""
+    if not _PTY_AVAILABLE:
+        pytest.skip("PTY not available on this platform")
+    import tty
+    master, slave = os.openpty()
+    tty.setcbreak(slave)
+    slave_file = os.fdopen(slave, "rb", buffering=0)
     monkeypatch.setattr(dashboard, "msvcrt", None)  # never take the Windows path
-    monkeypatch.setattr(dashboard, "select", _FakeSelectModule)
-    monkeypatch.setattr(dashboard, "sys", types.SimpleNamespace(stdin=fake_stdin))
-    return fake_stdin
+    monkeypatch.setattr(dashboard, "sys", types.SimpleNamespace(stdin=slave_file))
+    yield types.SimpleNamespace(master=master, slave=slave)
+    try:
+        slave_file.close()
+    finally:
+        try:
+            os.close(master)
+        except OSError:
+            pass
 
 
-def test_nonblocking_end_key_is_ignored_and_fully_drained(monkeypatch):
-    """Bug: End key (ESC [ F) left '[' and 'F' in the buffer; 'F' could then
-    be read as a key and fire an action shortcut. The fix drains the whole
-    ESC sequence and returns None."""
-    fake_stdin = _fake_unix_tty(monkeypatch, ["\x1b", "[", "F"])
-
+def test_nonblocking_end_key_is_ignored_and_fully_drained(pty_dashboard):
+    """Bug: End key (ESC [ F) left '[' and 'F' buffered; 'F' could then be read
+    as a key and fire an action shortcut (End -> Focus mode). The fix drains
+    the whole ESC sequence and returns None -- proven on a real terminal."""
+    os.write(pty_dashboard.master, b"\x1b[F")  # End key, all bytes together
+    assert _wait_readable(pty_dashboard.slave)
     assert dashboard._get_key_nonblocking() is None
-    assert not fake_stdin.queue, "ESC sequence must be fully drained"
 
-    # A following normal key must be read cleanly, not a leftover '[' / 'F'
-    fake_stdin.queue.extend("q")
+    # A later, separate keystroke must read cleanly, not a leftover '[' / 'F'.
+    os.write(pty_dashboard.master, b"q")
+    assert _wait_readable(pty_dashboard.slave)
     assert dashboard._get_key_nonblocking() == "q"
 
 
-def test_nonblocking_plain_key_passes_through(monkeypatch):
+def test_nonblocking_plain_key_passes_through(pty_dashboard):
     """Guard: the ESC-drain fix must not swallow normal single-key input."""
-    _fake_unix_tty(monkeypatch, ["q"])
+    os.write(pty_dashboard.master, b"q")
+    assert _wait_readable(pty_dashboard.slave)
     assert dashboard._get_key_nonblocking() == "q"
 
 
-def test_nonblocking_no_input_returns_none(monkeypatch):
-    """Guard: with nothing readable, the poll returns None (no block)."""
-    _fake_unix_tty(monkeypatch, [])
+def test_nonblocking_no_input_returns_none(pty_dashboard):
+    """Guard: with nothing readable, the poll returns None (never blocks)."""
     assert dashboard._get_key_nonblocking() is None
 
 
-def test_read_one_key_end_key_returns_sentinel_and_drains(monkeypatch):
-    """Bug: _read_one_key left ESC-sequence tail bytes buffered, so they
-    leaked into the next nonblocking poll as fake shortcuts. The fix drains
-    and returns "" (the no-key sentinel)."""
-    fake_stdin = _fake_unix_tty(monkeypatch, ["\x1b", "[", "F"])
-
+def test_read_one_key_end_key_returns_sentinel_and_drains(pty_dashboard):
+    """Bug: _read_one_key left ESC-sequence tail bytes buffered, so they leaked
+    into the next poll as fake shortcuts. The fix drains and returns "" ."""
+    os.write(pty_dashboard.master, b"\x1b[F")
+    assert _wait_readable(pty_dashboard.slave)
     assert dashboard._read_one_key() == ""
-    assert not fake_stdin.queue, "ESC sequence must be fully drained"
+
+    os.write(pty_dashboard.master, b"x")
+    assert _wait_readable(pty_dashboard.slave)
+    assert dashboard._read_one_key() == "x"
 
 
-def test_read_one_key_plain_key(monkeypatch):
+def test_read_one_key_plain_key(pty_dashboard):
     """Guard: _read_one_key still returns a normal key unchanged."""
-    _fake_unix_tty(monkeypatch, ["x"])
+    os.write(pty_dashboard.master, b"x")
+    assert _wait_readable(pty_dashboard.slave)
     assert dashboard._read_one_key() == "x"
 
 
