@@ -41,3 +41,6 @@ env/
 # Internal working notes
 tasks/
 .pytest_cache/
+
+# PyInstaller auto-generated spec (build_aegisforge.sh drives via CLI flags)
+AegisForge.spec

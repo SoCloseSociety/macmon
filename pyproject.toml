@@ -53,6 +53,9 @@ macmon = "macmon:app"
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
+# The native macOS menu-bar app (AegisForge.app) only. NOT needed for the CLI --
+# `macmon` runs with the core deps alone. Build with ./build_aegisforge.sh.
+app = ["rumps>=0.4", "pyobjc-framework-Cocoa>=10"]
 
 # Flat layout: root-level macmon.py (entry module) + the macmon_core/ package.
 # Hatchling cannot auto-detect this shape, so include both explicitly.
