@@ -516,6 +516,27 @@ Then, and only then, it gets **SIGTERM** (never SIGKILL). A process with a live
 parent is never signalled, whatever the swarm looks like: the swarm detector
 names the spawner and leaves stopping it to you.
 
+### Native macOS app (AegisForge.app)
+
+Prefer a menu-bar app to the terminal? `AegisForge.app` is the menu-bar face of
+the same engine -- a monochrome ember-shield glyph in the status bar, tinted by
+the worst current finding, with a dropdown of live CPU/RAM/swap/load, the FORGE
+anticipation lines, recent alerts, and one-click actions (open the dashboard,
+clean, purge, pause/resume). It does not sample on its own -- it reads what the
+60s LaunchAgent sampler wrote, so there is no double work and no auto-remediation
+surprise. Build it (only needed for the app; the CLI never depends on it):
+
+```bash
+pip install -e ".[app]"     # rumps + pyobjc, app-only
+./build_aegisforge.sh       # -> dist/AegisForge.app   (add --dmg for a disk image)
+open dist/AegisForge.app
+```
+
+It builds like the fleet's Sentinel.app: PyInstaller `--windowed`, the
+ember-shield icon, an `LSUIElement` agent (menu bar only, no Dock icon), ad-hoc
+codesigned. It is a convenience shell -- every safety guarantee above still comes
+from the one engine.
+
 ### Sentinel config
 
 Config lives in `~/.macmon/sentinel.conf` (JSON). Any key you omit falls back to
