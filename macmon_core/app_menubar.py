@@ -24,7 +24,6 @@ NOT a core runtime dep of the macmon CLI -- install it with ``pip install
 """
 from __future__ import annotations
 
-import shlex
 import subprocess
 import sys
 import threading
@@ -39,7 +38,7 @@ except ImportError:  # pragma: no cover - exercised via the packaged app only
     rumps = None
 
 from . import aegis, sentinel
-from .utils import _applescript_escape, console
+from .utils import console
 
 REFRESH_S = 30                       # menu refresh cadence (the sampler is 60s)
 STALE_S = 180                        # a sample older than this is flagged STALE
@@ -289,21 +288,33 @@ def _confirm(title: str, message: str, ok: str = "OK") -> bool:
         return False
 
 
+_web_port = None  # the local dashboard server's port, once started
+
+
+def _ensure_web():
+    """Start the local dashboard server once (idempotent). Returns its port,
+    or None if it could not start."""
+    global _web_port
+    if _web_port is None:
+        try:
+            from . import app_webui
+            _srv, _web_port = app_webui.serve()
+        except Exception:
+            _web_port = None
+    return _web_port
+
+
 def open_dashboard(_=None):
-    """Open the live TUI dashboard in a Terminal window."""
-    exe = sentinel.find_macmon()
-    if exe:
-        shell = f"{shlex.quote(exe)} dashboard"
-    elif not getattr(sys, "frozen", False) and (REPO / "macmon.py").exists():
-        shell = f"cd {shlex.quote(str(REPO))} && {shlex.quote(sys.executable)} macmon.py dashboard"
-    else:
-        _notify(f"{aegis.BRAND}: macmon not found",
-                "Install the CLI (install.sh or pip install -e .) to open the dashboard.")
+    """Open the visible AegisForge dashboard -- a branded local web page in the
+    browser (the fleet pattern: a 127.0.0.1 HTTP origin, not a hidden agent)."""
+    port = _ensure_web()
+    if not port:
+        _notify(f"{aegis.BRAND}: dashboard unavailable",
+                "Could not start the local dashboard server.")
         return
-    script = f'tell application "Terminal" to do script "{_applescript_escape(shell)}"'
     try:
-        subprocess.Popen(["osascript", "-e", 'tell application "Terminal" to activate',
-                          "-e", script])
+        from . import app_webui
+        app_webui.open_in_browser(port)
     except Exception as e:
         _notify(f"{aegis.BRAND}: dashboard failed", str(e)[:200] or type(e).__name__)
 
@@ -386,6 +397,15 @@ if rumps is not None:  # pragma: no cover - requires a GUI session
             ]
             self._live_keys: list = []
             self._refresh(None)
+            # Open something VISIBLE at launch: start the local dashboard server
+            # and open it in the browser (a menu-bar agent alone shows no window).
+            port = _ensure_web()
+            if port:
+                try:
+                    from . import app_webui
+                    app_webui.open_in_browser(port)
+                except Exception:
+                    pass
 
         @rumps.timer(REFRESH_S)
         def _refresh(self, _):

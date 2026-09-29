@@ -20,7 +20,6 @@ Regressions locked here (adversarial audit of the first .app build):
   - clean is confirmed before it runs; the sample age is shown, STALE past 180 s
 """
 import inspect
-import shlex
 import sys
 import threading
 import types
@@ -323,10 +322,15 @@ class TestFrozenActions:
         mb._run_action(["focus"])
         assert len(frozen) == 1 and "unavailable" in frozen[0][0]
 
-    def test_dashboard_needs_the_installed_launcher(self, frozen, monkeypatch):
-        monkeypatch.setattr(sentinel, "find_macmon", lambda: None)
+    def test_dashboard_opens_the_web_ui_even_when_frozen(self, monkeypatch):
+        # The dashboard is now a local web page (no macmon.py / Terminal needed),
+        # so it works from the frozen .app.
+        from macmon_core import app_webui
+        seen = {}
+        monkeypatch.setattr(mb, "_ensure_web", lambda: 9137)
+        monkeypatch.setattr(app_webui, "open_in_browser", lambda p: seen.setdefault("port", p))
         mb.open_dashboard()
-        assert len(frozen) == 1 and "not found" in frozen[0][0]
+        assert seen["port"] == 9137
 
 
 # ── actions: dev mode runs a subprocess ──────────────────────────────────
@@ -370,28 +374,18 @@ class TestDevActions:
 
 
 class TestOpenDashboard:
-    @staticmethod
-    def _popen(monkeypatch):
+    def test_opens_the_local_web_ui(self, monkeypatch, notes):
+        from macmon_core import app_webui
         seen = {}
-        monkeypatch.setattr(mb.subprocess, "Popen", lambda cmd, *a, **k: seen.setdefault("cmd", cmd))
-        return seen
-
-    def test_uses_osascript_and_the_quoted_launcher(self, monkeypatch, notes):
-        monkeypatch.setattr(sentinel, "find_macmon", lambda: "/Users/n o/bin/macmon")
-        seen = self._popen(monkeypatch)
+        monkeypatch.setattr(mb, "_ensure_web", lambda: 9137)
+        monkeypatch.setattr(app_webui, "open_in_browser", lambda p: seen.setdefault("port", p))
         mb.open_dashboard()
-        cmd = seen["cmd"]
-        assert cmd[0] == "osascript" and any("Terminal" in part for part in cmd)
-        assert "'/Users/n o/bin/macmon' dashboard" in cmd[-1] and notes == []
+        assert seen["port"] == 9137 and notes == []
 
-    def test_dev_fallback_quotes_the_repo_and_the_interpreter(self, monkeypatch, notes):
-        monkeypatch.delattr(sys, "frozen", raising=False)
-        monkeypatch.setattr(sentinel, "find_macmon", lambda: None)
-        seen = self._popen(monkeypatch)
+    def test_reports_when_the_server_cannot_start(self, monkeypatch, notes):
+        monkeypatch.setattr(mb, "_ensure_web", lambda: None)
         mb.open_dashboard()
-        script = seen["cmd"][-1]
-        assert f"cd {shlex.quote(str(mb.REPO))} && {shlex.quote(sys.executable)} macmon.py dashboard" in script
-        assert notes == []
+        assert len(notes) == 1 and "unavailable" in notes[0][0]
 
 
 # ── the live block against a real rumps Menu ─────────────────────────────
