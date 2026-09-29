@@ -913,10 +913,15 @@ class TestSampleCommand:
         monkeypatch.setattr(sentinel.shutil, "which", lambda name: None)
         monkeypatch.setattr(sentinel, "_MACMON_CANDIDATES", (str(tmp_path / "nope"), str(tmp_path / "macmon")))
         assert sentinel.find_macmon() is None
-        launcher = tmp_path / "macmon"
-        launcher.write_text("#!/bin/sh\n")
-        launcher.chmod(0o755)
-        assert sentinel.find_macmon() == str(launcher)
+        # The well-known-homes fallback gates on os.access(X_OK) -- a POSIX exec
+        # bit. On Windows executability is decided by extension (PATHEXT), so a
+        # bare "macmon" is never X_OK there and find_macmon relies on which()
+        # instead; those paths (/usr/local/bin ...) don't exist on Windows anyway.
+        if os.name != "nt":
+            launcher = tmp_path / "macmon"
+            launcher.write_text("#!/bin/sh\n")
+            launcher.chmod(0o755)
+            assert sentinel.find_macmon() == str(launcher)
         monkeypatch.setattr(sentinel.shutil, "which", lambda name: "/on/path/macmon")
         assert sentinel.find_macmon() == "/on/path/macmon"
 
