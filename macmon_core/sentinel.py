@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -178,7 +179,6 @@ def _build_notifier():
     if icon is None:
         return False
     try:
-        import shutil
         import tempfile
         if NOTIFIER_APP.exists():
             shutil.rmtree(NOTIFIER_APP)
@@ -478,7 +478,7 @@ def _remediate(vm, sw, cfg, astate, now, sessions, streaks, oll):
     done = []
     # LEVEL 1a -- unload idle ollama models. Non-destructive: they reload on the
     # next request. Often the single biggest hidden hog (multi-GB on the GPU).
-    if cfg.get("auto_unload_ollama") and now - astate.get("_ollama", 0) > 900:
+    if aegis._bool(cfg, "auto_unload_ollama") and now - astate.get("_ollama", 0) > 900:
         if oll["models"] and not oll["busy"] and oll["gb"] >= cfg["ollama_gb"]:
             # Stamp the cooldown on every ATTEMPT: a persistently failing
             # `ollama stop` must not be retried on every 60s sample.
@@ -487,7 +487,7 @@ def _remediate(vm, sw, cfg, astate, now, sessions, streaks, oll):
             if freed:
                 done.append(("auto_ollama",
                              f"Unloaded {oll['gb']:.1f} GB of ollama models ({', '.join(freed)}) -- they reload automatically on demand"))
-    if IS_MAC and cfg.get("auto_purge") and now - astate.get("_purge", 0) > 1800:
+    if IS_MAC and aegis._bool(cfg, "auto_purge") and now - astate.get("_purge", 0) > 1800:
         # Stamp the cooldown on every ATTEMPT (like the ollama branch): a
         # persistently failing purge must not be retried on every 60s sample.
         astate["_purge"] = now
@@ -499,7 +499,7 @@ def _remediate(vm, sw, cfg, astate, now, sessions, streaks, oll):
             # A hung/broken purge must not crash the sampler -- ASTATE would
             # never be written and every cooldown would be lost (alert spam).
             pass
-    if cfg.get("auto_trim_fleet") and now - astate.get("_trim", 0) > 900:
+    if aegis._bool(cfg, "auto_trim_fleet") and now - astate.get("_trim", 0) > 900:
         closed = _trim_fleet(sessions, streaks, _sentinel_keep(cfg), _sentinel_idle(cfg))
         if closed:
             astate["_trim"] = now
@@ -584,21 +584,35 @@ def run_sample():
             _notify(title, msg)
             fired.append((key, msg))
 
+    # Each stage below is fenced on its own: a bad history row or a psutil
+    # hiccup must not abort the sample between the record write and the
+    # ASTATE write -- that lost every cooldown just stamped (the alerts
+    # re-fired every minute) and every idle streak. A failed stage is written
+    # to the alerts log as an "error" line instead.
+
     # ── AegisForge anticipation: trend/slope over the recent history. Notify-only.
-    window = aegis._int(cfg, "trend_window", 10, lo=3) + 2
-    fired.extend(_fire_findings(aegis.analyze(_load_tail(window), cfg, now), astate, now))
+    try:
+        window = aegis._int(cfg, "trend_window", 10, lo=3) + 2
+        fired.extend(_fire_findings(aegis.analyze(_load_tail(window), cfg, now), astate, now))
+    except Exception as e:
+        fired.append(("error", f"anticipation skipped this sample: {e!r}"))
 
     # ── Auto-remediation (safe escalation on memory pressure) ──
-    sessions = _claude_sessions()
-    streaks = _update_idle_streaks(sessions, astate)
-    for key, msg in _remediate(vm, sw, cfg, astate, now, sessions, streaks, oll):
-        fired.append((key, msg))
+    try:
+        sessions = _claude_sessions()
+        streaks = _update_idle_streaks(sessions, astate)
+        fired.extend(_remediate(vm, sw, cfg, astate, now, sessions, streaks, oll))
+    except Exception as e:
+        fired.append(("error", f"remediation skipped this sample: {e!r}"))
 
     # ── Auto-reap (opt-in, default OFF): only lineage-proven leaks under PID 1,
-    # idle, with no live connection -- the invariants live in aegis.reap_leaks.
-    for key, msg in aegis.reap_leaks(forge["leaks"], cfg, astate, now):
-        _notify(f"{ALERT_TITLE} auto", msg)
-        fired.append((key, msg))
+    # idle, with no live or listening socket -- the invariants live in aegis.reap_leaks.
+    try:
+        for key, msg in aegis.reap_leaks(forge["leaks"], cfg, astate, now):
+            _notify(f"{ALERT_TITLE} auto", msg)
+            fired.append((key, msg))
+    except Exception as e:
+        fired.append(("error", f"auto-reap skipped this sample: {e!r}"))
 
     try:
         ASTATE.write_text(json.dumps(astate))
@@ -643,6 +657,24 @@ def _load_tail(n: int = 16) -> list:
         except Exception:
             pass
     return rows
+
+
+def _tail_lines(path: Path, n: int, chunk: int = 64 * 1024) -> list[str]:
+    """The last n non-empty lines of a text log, reading only its tail (the
+    alerts log grows for months; readers on a UI thread must not slurp it)."""
+    if n <= 0 or not path.exists():
+        return []
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - chunk))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return []
+    if size > chunk:
+        lines = lines[1:]  # the first line is almost certainly cut mid-record
+    return [ln for ln in lines if ln.strip()][-n:]
 
 
 # ── Tactical console ─────────────────────────────────────────────────────
@@ -757,7 +789,7 @@ def _forge_panel(rows, cfg, findings, now=None):
         f"{ld['sustained']} sample(s) above {ld['factor']:.0f}x" if ld["sustained"] else "nominal",
         "critical" if "load" in fired else "medium" if ld["ratio"] > 1.0 else "ok")
     h = t["swarm"].get("headless")
-    w = aegis._int(cfg, "swarm_window", 5, lo=1)
+    w = aegis.growth_span(t, cfg)
     if h:
         row("SWARM", f"headless x{h['count']}  ({h['growth']:+d} / {w} min)", f"<- {t['spawn'] or 'unknown spawner'}",
             "high" if "swarm" in fired else "low")
@@ -769,7 +801,7 @@ def _forge_panel(rows, cfg, findings, now=None):
         row("SWARM", "none", "no runaway family", "ok")
     lk = t["leaks"]
     row("LEAKS", f"{lk['leak']} proven  /  {lk['p1']} under PID 1",
-        ("auto-reap ON (opt-in)" if cfg.get("auto_reap_orphans") else "auto-reap OFF -- notify-only")
+        ("auto-reap ON (opt-in)" if aegis._bool(cfg, "auto_reap_orphans") else "auto-reap OFF -- notify-only")
         + (f"  {', '.join(lk['names'])}" if lk["names"] else ""),
         "medium" if "leaks" in fired else "low" if lk["leak"] else "ok")
     title = f"[bold {EMBER}]FORGE[/] [{DIM}]anticipation -- slope over {t['points']} pts / {t['span_min']:.0f} min[/]"
@@ -848,12 +880,7 @@ def _snapshot_panel():
 
 
 def _tail_alerts(n):
-    if not ALERTS_LOG.exists():
-        return []
-    try:
-        return ALERTS_LOG.read_text().splitlines()[-n:]
-    except Exception:
-        return []
+    return _tail_lines(ALERTS_LOG, n)
 
 
 def show_snapshot():
@@ -908,11 +935,13 @@ def show_status():
     t.add_row("Sentinel (60s sampler)", Text("ACTIVE" if mon_active else "STOPPED", style=GREEN if mon_active else RED))
     t.add_row("Weekly health agent", Text("ACTIVE" if weekly_active else ("STOPPED" if IS_MAC else "macOS only"), style=GREEN if weekly_active else DIM))
     t.add_row("AegisForge detectors", Text("ON (notify-only): swap/RAM trend, load, swarm, leaks", style=MINT))
-    t.add_row("Auto-unload ollama models", Text("ON" if cfg.get("auto_unload_ollama") else "OFF", style=GREEN if cfg.get("auto_unload_ollama") else DIM))
-    t.add_row("Auto-purge (RAM)", Text("ON" if cfg.get("auto_purge") else "OFF (notify-only)", style=GREEN if cfg.get("auto_purge") else DIM))
-    t.add_row("Auto-trim idle AI sessions", Text("ON" if cfg.get("auto_trim_fleet") else "OFF", style=AMBER if cfg.get("auto_trim_fleet") else DIM))
-    t.add_row("Auto-reap leaked orphans", Text("ON (proven leaks only)" if cfg.get("auto_reap_orphans") else "OFF (notify-only)",
-                                               style=EMBER if cfg.get("auto_reap_orphans") else DIM))
+    unload, purge_on = aegis._bool(cfg, "auto_unload_ollama"), aegis._bool(cfg, "auto_purge")
+    trim, reap_on = aegis._bool(cfg, "auto_trim_fleet"), aegis._bool(cfg, "auto_reap_orphans")
+    t.add_row("Auto-unload ollama models", Text("ON" if unload else "OFF", style=GREEN if unload else DIM))
+    t.add_row("Auto-purge (RAM)", Text("ON" if purge_on else "OFF (notify-only)", style=GREEN if purge_on else DIM))
+    t.add_row("Auto-trim idle AI sessions", Text("ON" if trim else "OFF", style=AMBER if trim else DIM))
+    t.add_row("Auto-reap leaked orphans", Text("ON (proven leaks only)" if reap_on else "OFF (notify-only)",
+                                               style=EMBER if reap_on else DIM))
     t.add_row("Metrics collected", Text(f"{len(_load(100000))} samples", style=DIM))
     console.print(Panel(t, title=_banner("status"), border_style=DIM, style=f"on {C['ground']}"))
 
@@ -949,15 +978,46 @@ def _plist(label: str, program_args: list[str], interval: int) -> str:
 
 
 _TASK_NAME = "macmon-sentinel"  # schtasks / cron identifier (Windows/Linux)
+# Well-known homes of the `macmon` launcher when it is not on PATH: install.sh's
+# wrapper, Homebrew, pipx / pip --user. (A Finder-launched .app has a minimal PATH.)
+_MACMON_CANDIDATES = ("/usr/local/bin/macmon", "/opt/homebrew/bin/macmon",
+                      str(Path.home() / ".local/bin/macmon"))
+
+
+def find_macmon():
+    """Path of the installed `macmon` launcher, or None."""
+    exe = shutil.which("macmon")
+    if exe:
+        return exe
+    for cand in _MACMON_CANDIDATES:
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
 
 
 def _sample_cmd() -> list[str]:
-    return [str(VENV_PY), str(MACMON_PY), "sentinel", "--sample"]
+    """argv the scheduler runs every 60s. A checkout uses its own venv +
+    macmon.py (unchanged); otherwise the installed `macmon` launcher, else this
+    interpreter on macmon.py. The frozen AegisForge.app has neither a venv nor
+    macmon.py and its sys.executable IS the app, so there an empty list means
+    "nothing runnable": the install must refuse rather than register a job
+    that fails every minute while --resume reports success."""
+    if VENV_PY.exists() and MACMON_PY.exists():
+        return [str(VENV_PY), str(MACMON_PY), "sentinel", "--sample"]
+    exe = find_macmon()
+    if exe:
+        return [exe, "sentinel", "--sample"]
+    if not getattr(sys, "frozen", False) and MACMON_PY.exists():
+        return [sys.executable, str(MACMON_PY), "sentinel", "--sample"]
+    return []
 
 
 def _schedule_install() -> tuple[bool, str]:
     """Register a per-minute sampler with the OS scheduler. Returns (ok, note)."""
     cmd = _sample_cmd()
+    if not cmd:
+        return (False, "no macmon to schedule -- install the CLI (install.sh or pip install -e .) "
+                       "and run 'macmon sentinel --resume'")
     if IS_MAC:
         la_dir = Path.home() / "Library/LaunchAgents"
         la_dir.mkdir(parents=True, exist_ok=True)
@@ -1075,7 +1135,7 @@ def enable_auto(aggressive: bool = False, reap: bool = False):
             ("Level 2 (auto_trim_fleet): ", label),
             (f"{'ON -- closes IDLE AI sessions when RAM is critical (resumable).' if aggressive else 'OFF -- enable with --enable-auto --aggressive.'}\n", DIM),
             ("Level 2 (auto_reap_orphans): ", label),
-            (f"{'ON -- SIGTERMs dev processes under PID 1 whose parent the sentinel WATCHED die, once idle 5 min with no live connection. Never a live workload.' if reap else 'OFF -- enable with --enable-auto --reap.'}\n", DIM),
+            (f"{'ON -- SIGTERMs dev processes under PID 1 whose parent the sentinel WATCHED die, once idle 5 min with no live or listening socket. Never a workload with a live parent or an active/listening socket.' if reap else 'OFF -- enable with --enable-auto --reap.'}\n", DIM),
         ),
         title=_banner("auto-remediation"), border_style=MINT, style=f"on {C['ground']}"))
     if IS_MAC and not _purge_nopasswd_ready():
