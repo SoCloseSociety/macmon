@@ -388,11 +388,13 @@ macmon --help
 | `macmon sentinel` | Tactical console snapshot |
 | `macmon sentinel --watch` | Live tactical console |
 | `macmon sentinel --force-clean` | Manual override: scan then clean |
-| `macmon sentinel --test-notify` | Test notification (shows the macmon icon) |
+| `macmon sentinel --test-notify` | Test notification (shows the AegisForge icon) |
 | `macmon sentinel --enable-auto` | Enable safe auto-remediation (unload idle ollama models + RAM purge) |
 | `macmon sentinel --enable-auto --aggressive` | Also auto-close idle AI sessions |
+| `macmon sentinel --enable-auto --reap` | Also auto-reap PROVEN leaked orphans (PID 1 + parent watched dying) |
 | `macmon sentinel --disable-auto` | Disable all auto-remediation (back to notify-only) |
 | `macmon sentinel --trim` | Close idle AI sessions now |
+| `macmon sentinel --reap-orphans` | List proven leaked orphans and reap them now (asks first) |
 | `macmon sentinel --unload-ollama` | Unload idle ollama models now (they reload on demand) |
 | `macmon sentinel --setup-purge` | Grant passwordless `purge` via sudoers so auto-purge runs unattended |
 
@@ -456,17 +458,63 @@ prompt. `macmon sentinel --setup-purge` sets that up explicitly, and only that:
 - **Revoke at any time:** `sudo rm /etc/sudoers.d/macmon-purge`
 - **Manual override:** force levers when you must push the system --
   `--force-purge`, `--force-clean`, `--force-focus`, `--pause` / `--resume`.
-- **Branded notifications:** alerts pop up carrying the macmon icon (not the
-  generic Script Editor icon) via a tiny bundled notifier app. Try it with
-  `macmon sentinel --test-notify`.
+- **Branded notifications:** alerts pop up as **AegisForge** carrying its icon
+  (not the generic Script Editor icon) via a tiny bundled notifier app. Try it
+  with `macmon sentinel --test-notify`.
 
 ```bash
 macmon sentinel --install     # arm it (LaunchAgent, 60s sampler)
-macmon sentinel               # tactical snapshot with gauges + sparklines
+macmon sentinel               # tactical snapshot with gauges + sparklines + FORGE panel
 macmon sentinel --watch       # live console
 macmon sentinel --status      # agent + config status
 macmon sentinel --log         # recent alerts
 ```
+
+### AegisForge -- the proactive layer
+
+`macmon` is the engine; **AegisForge** ("fleet health, forged") is what you see:
+the console theme and banner, the notification identity, and a set of
+*anticipatory* detectors (`macmon_core/aegis.py`) that read the metrics
+history so the sentinel alerts on **trajectory**, not just on the current
+value. Nothing here is a rename: the CLI, the package, the console script and
+the LaunchAgent labels are unchanged.
+
+All detectors are **on by default and notify-only**:
+
+| Detector | Fires when | Example notification |
+|---|---|---|
+| Swap climbing | swap >= `swap_trend_min_gb`, rising >= `swap_slope_gb_min` GB/min, and due to cross `swap_critical_gb` within `swap_eta_min` (before the line -- past it, the absolute alert owns it) | `Swap 5.7 GB, climbing +0.30 GB/min -- reaches the 8 GB critical line in ~8 min at this rate. Biggest RSS: ...` |
+| Memory pressure climbing | same contract on RAM% (`ram_trend_min`, `ram_slope_pct_min`, `ram_eta_min` -> `ram_critical`) | `RAM 84%, climbing +1.5%/min -- hits the 90% critical line in ~4 min` |
+| Load catastrophe | load1 > `load_factor` x logical cores for `load_sustain` consecutive samples | `Load 32.0 on 12 cores (2.7x) for 3 samples -- top CPU: node 312%, ...` |
+| Process swarm | headless browsers (puppeteer / playwright / Chrome for Testing / any browser binary run `--headless`) grow by `swarm_headless_growth` within `swarm_window` samples or exceed `swarm_headless_max`; any other executable grows by `swarm_growth` while >= `swarm_min` | `59 headless browser processes (+35 in 5 min), spawned by node shoot.mjs (pid 4242). Not auto-killed (live workload)` |
+| Leaked orphans | >= `orphan_alert_min` dev processes (headless browsers, node incl. next-server, python) sit under PID 1 **and** their parent is proven dead | `3 leaked dev processes (parent exited, reparented to PID 1, +3 over the window): Google Chrome for Testing x3` |
+
+The console's **FORGE** panel shows the same figures live (slope, ETA,
+sustained load, swarm growth and its spawner, proven vs. unproven orphans).
+
+**What "proven dead" means -- and the safety line.** The only auto-action
+AegisForge can take is reaping leaked orphans, and it is **opt-in**
+(`auto_reap_orphans`, off by default; `--enable-auto --reap`, or on demand with
+`--reap-orphans`). A process qualifies only if **all** of these hold:
+
+- it is reparented to PID 1 **and** an earlier sample saw it under a live parent
+  that a later sample saw exit (or turn zombie, or have its PID reused). A dead
+  process-*group* leader is deliberately not accepted as proof: on macOS every
+  launchd/brew-services job and the Android emulator look like that;
+- it is in a dev family (headless browser, node, python) and outside the
+  never-touch set -- IDEs and their helpers, Claude/codex/MCP sessions and native
+  hosts, `~/.claude` `~/.codex` `~/.cursor` `~/.vscode` infrastructure, ollama and
+  local LLM runtimes, Sentinel/NeoBot/fleet processes (WireGuard, sshd), VMs and
+  containers, terminals and shells, other users, anything under `/System`,
+  `/usr/libexec`, `/usr/sbin`, and your apps under `/Applications` (except a
+  browser binary running `--headless`, which is an automation instance);
+- it has been idle (< 1% CPU, itself and its descendants) for `reap_idle_samples`
+  samples, holds no ESTABLISHED TCP connection (unknown => skip), and is still
+  under PID 1 at signal time.
+
+Then, and only then, it gets **SIGTERM** (never SIGKILL). A process with a live
+parent is never signalled, whatever the swarm looks like: the swarm detector
+names the spawner and leaves stopping it to you.
 
 ### Sentinel config
 
@@ -491,6 +539,18 @@ the default below.
 | `ram_critical` | `90.0` | Remediation triggers above this RAM% ... |
 | `swap_critical_gb` | `8.0` | ... **and** above this swap usage, never on one alone |
 | `idle_samples` | `10` | A session must be idle this many samples (~10 min) before trimming |
+| `trend_window` | `10` | Samples used for slope / ETA (~10 min) |
+| `swap_trend_min_gb` / `swap_slope_gb_min` / `swap_eta_min` | `3.0` / `0.1` / `20` | Swap-climbing alert: floor (GB), slope (GB/min), ETA to `swap_critical_gb` (min) |
+| `ram_trend_min` / `ram_slope_pct_min` / `ram_eta_min` | `75` / `1.0` / `15` | Memory-climbing alert: floor (%), slope (%/min), ETA to `ram_critical` (min) |
+| `load_factor` / `load_sustain` | `2.0` / `3` | Load catastrophe: load1 > factor x cores, for this many consecutive samples |
+| `swarm_window` | `5` | Growth is measured against the sample this many samples back |
+| `swarm_headless_min` / `swarm_headless_growth` / `swarm_headless_max` | `8` / `8` / `40` | Headless-browser swarm: floor, growth in the window, absolute cap |
+| `swarm_floor` / `swarm_min` / `swarm_growth` | `8` / `24` / `12` | Any executable: tracked from `swarm_floor` instances; alert at >= `swarm_min` with >= `swarm_growth` growth |
+| `orphan_alert_min` | `3` | Alert when this many PROVEN leaked orphans are present |
+| `auto_reap_orphans` | `false` | Opt-in: SIGTERM proven leaked orphans (see the safety line above) |
+| `reap_idle_samples` | `5` | A leak must be idle this many samples (~5 min) before reaping |
+| `reap_families` | `["headless","node","python"]` | Which leak families may be reaped |
+| `reap_max` | `40` | At most this many reaps per cycle |
 
 ---
 
@@ -501,6 +561,7 @@ macmon.py                CLI router (typer, 30 commands)
 macmon_core/
   dashboard.py           Live TUI (rich) — 12 panels, keyboard shortcuts
   sentinel.py            MACMON-SENTINEL: 60s sampler, alerts, auto-remediation
+  aegis.py               AegisForge layer: theme/brand, trend detectors, lineage-proven leak reaper
   processes.py           Process manager, sweep, ports
   cleaner.py             System cleaner (junk, browsers, apps)
   gc.py                  Dev garbage collector
