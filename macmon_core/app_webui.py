@@ -6,8 +6,14 @@ browser at launch, so there IS something visible -- the fleet's Sentinel does
 the same (a local HTTP origin, never file://, so nothing is cached stale).
 
 Read-only by design: the page only shows what the 60s sampler wrote (via
-``app_menubar.gather``). It performs NO system actions -- destructive levers
-stay in the menu bar. Bound to 127.0.0.1 only; never 0.0.0.0.
+``app_webui.status_dict`` over ``app_menubar.gather``). It performs NO system
+actions and exposes NO mutating endpoint (GET only; a POST here would be
+reachable through any DNS-rebinding read, so there is none): the levers
+(clean / purge / sentinel --pause) live in the ``macmon`` CLI, or in the
+menu-bar FALLBACK app when pywebview is absent. The window app itself has no
+menu bar. Bound to 127.0.0.1 only, never 0.0.0.0, and every request must carry
+a loopback ``Host`` header (403 otherwise) so a rebinding page cannot read the
+host telemetry.
 """
 from __future__ import annotations
 
@@ -20,6 +26,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DEFAULT_PORT = 9137  # AegisForge's own port -- never 9101/9102 (fleet Sentinel SOC)
 _HOST = "127.0.0.1"
+# Host header hostnames a request may carry (port stripped). A DNS-rebinding
+# page reaches this port with ITS OWN hostname in Host, which is refused.
+_ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost"})
+# The only severities the page's `sev-<x>` class / label may carry; anything
+# else (a foreign Finding with a made-up level) is shown as "info".
+_SEVERITIES = frozenset({"critical", "high", "medium", "low", "info", "ok"})
 
 # Brand tokens mirror aegis.AEGIS_THEME (kept literal so the page is offline).
 _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -67,7 +79,7 @@ footer{margin-top:26px;color:var(--dim);font-size:11px;text-align:center}
 <div class="grid" id="vitals"></div>
 <div class="sec">Forge &mdash; anticipation</div><div id="findings"></div>
 <div class="sec">Recent alerts</div><div id="alerts"></div>
-<footer>engine: macmon sentinel &middot; read-only view &middot; actions live in the menu bar</footer>
+<footer>engine: macmon sentinel &middot; read-only view &mdash; run actions from the <code>macmon</code> CLI (clean / purge / sentinel --pause)</footer>
 </div>
 <script>
 const bars={cpu:["CPU","%",100],ram:["RAM","%",100],swap_gb:["Swap","GB",64],
@@ -90,7 +102,7 @@ async function tick(){
  const F=document.getElementById("findings");F.innerHTML="";
  if(!d.findings||!d.findings.length){F.innerHTML=`<div class="calm">All clear &mdash; forge cold.</div>`}
  else for(const f of d.findings){F.insertAdjacentHTML("beforeend",
-   `<div class="finding sev-${f.severity}"><span class="lvl">${f.severity}</span>${escapeHtml(f.text)}</div>`);}
+   `<div class="finding sev-${escapeHtml(f.severity)}"><span class="lvl">${escapeHtml(f.severity)}</span>${escapeHtml(f.text)}</div>`);}
  const AL=document.getElementById("alerts");AL.innerHTML="";
  if(!d.alerts||!d.alerts.length){AL.innerHTML=`<div class="alert">none</div>`}
  else for(const x of d.alerts){AL.insertAdjacentHTML("beforeend",`<div class="alert">${escapeHtml(x)}</div>`);}
@@ -110,11 +122,18 @@ def _age_label(age_s):
     return (txt + " / STALE" if stale else txt), stale
 
 
+def _severity(sev) -> str:
+    """Server-side whitelist: the page interpolates the severity into a CSS
+    class and a label, so only a known token may leave here."""
+    sev = str(sev).lower()
+    return sev if sev in _SEVERITIES else "info"
+
+
 def status_dict() -> dict:
     """gather() shaped for JSON: findings as {severity,text}, plus a sample age."""
     from . import app_menubar as mb
     snap = mb.gather()
-    findings = [{"severity": mb._finding_severity(f), "text": mb._finding_text(f)}
+    findings = [{"severity": _severity(mb._finding_severity(f)), "text": mb._finding_text(f)}
                 for f in snap.get("findings", [])]
     label, stale = _age_label(snap.get("age_s"))
     return {
@@ -128,12 +147,39 @@ def status_dict() -> dict:
     }
 
 
+def status_json() -> bytes:
+    """``status_dict()`` as strict JSON. A NaN/Infinity vital would serialize
+    as a bare ``NaN`` token, which ``JSON.parse`` rejects -- the page would then
+    keep showing the LAST good figures as if live. So: ``allow_nan=False``, and
+    the one broken case is reported as an engine error flagged STALE."""
+    try:
+        return json.dumps(status_dict(), allow_nan=False).encode("utf-8")
+    except Exception as e:
+        return json.dumps({"error": str(e), "vitals": {}, "findings": [], "alerts": [],
+                           "worst": "ok", "age_label": "engine error", "stale": True},
+                          allow_nan=False).encode("utf-8")
+
+
+def host_allowed(host_header) -> bool:
+    """True when the request's ``Host`` names this loopback origin. The page
+    always fetches with the loopback Host; a DNS-rebinding page carries its own
+    hostname (the browser never lets it forge Host), so that is refused."""
+    host = (host_header or "").strip().lower()
+    if host.startswith("["):                    # bracketed IPv6 literal: never loopback here
+        return False
+    hostname = host.rsplit(":", 1)[0] if ":" in host else host
+    return hostname in _ALLOWED_HOSTS
+
+
 class _Handler(BaseHTTPRequestHandler):
+    timeout = 10  # per-connection socket timeout: a stalled client cannot pin a thread
+
     def _send(self, code, body: bytes, ctype: str):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -141,16 +187,14 @@ class _Handler(BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
+        if not host_allowed(self.headers.get("Host")):
+            self._send(403, b"forbidden: loopback host only", "text/plain")
+            return
         path = self.path.split("?", 1)[0]
         if path == "/" or path == "/index.html":
             self._send(200, _PAGE.encode("utf-8"), "text/html; charset=utf-8")
         elif path == "/api/status":
-            try:
-                body = json.dumps(status_dict()).encode("utf-8")
-            except Exception as e:
-                body = json.dumps({"error": str(e), "vitals": {}, "findings": [],
-                                   "alerts": [], "worst": "ok"}).encode("utf-8")
-            self._send(200, body, "application/json")
+            self._send(200, status_json(), "application/json")
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -167,11 +211,42 @@ def _bind(port: int) -> ThreadingHTTPServer:
 
 
 def serve(port: int = DEFAULT_PORT) -> tuple[ThreadingHTTPServer, int]:
-    """Start the dashboard server in a daemon thread. Returns (server, port)."""
+    """Start a NEW dashboard server in a daemon thread. Returns (server, port).
+    Callers that want the app's single shared server use ``ensure_server``."""
     srv = _bind(port)
     real_port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, real_port
+
+
+# The ONE server the app runs. Both the native window (``run_window``) and the
+# menu-bar fallback (``app_menubar._ensure_web``) go through this cache, so a
+# window that fell back to the menu bar never leaves two servers bound.
+_shared: tuple[ThreadingHTTPServer, int] | None = None
+_shared_lock = threading.Lock()
+
+
+def ensure_server(port_pref: int = DEFAULT_PORT) -> tuple[ThreadingHTTPServer, int]:
+    """Start the shared dashboard server once (idempotent); returns (server, port).
+    Raises if it cannot bind (the caller decides how to report that)."""
+    global _shared
+    with _shared_lock:
+        if _shared is None:
+            _shared = serve(port_pref)
+        return _shared
+
+
+def stop_server() -> None:
+    """Shut the shared server down and release its port (idempotent)."""
+    global _shared
+    with _shared_lock:
+        shared, _shared = _shared, None
+    if shared is not None:
+        srv, _port = shared
+        try:
+            srv.shutdown()
+        finally:
+            srv.server_close()
 
 
 def url_for(port: int) -> str:
@@ -195,18 +270,24 @@ def open_in_browser(port: int) -> None:
 def run_window(port_pref: int = DEFAULT_PORT, width: int = 940, height: int = 700) -> bool:
     """Open a NATIVE app window (pywebview/WKWebView) rendering the local
     dashboard -- the fleet Sentinel pattern: a real window, not a browser tab,
-    pointed at a 127.0.0.1 HTTP origin (never file://). Blocks on the main
-    thread until the window closes. Returns False (without blocking) if pywebview
-    is unavailable, so the caller can fall back."""
+    pointed at a 127.0.0.1 HTTP origin (never file://). The window is a
+    READ-ONLY dashboard with no menu bar: it exposes no action of its own; the
+    levers are the ``macmon`` CLI (clean / purge / sentinel --pause). Blocks on
+    the main thread until the window closes, then shuts the shared server down.
+    Returns False (without blocking, and without binding a server) if pywebview
+    is unavailable, so the caller can fall back to the menu-bar app."""
     try:
         import webview
     except ImportError:
         return False
     from . import aegis
-    _srv, port = serve(port_pref)  # local server in a daemon thread
-    webview.create_window(aegis.BRAND, url_for(port), width=width, height=height,
-                          min_size=(600, 480))
-    webview.start()  # blocks on the main thread until the window closes
+    _srv, port = ensure_server(port_pref)  # the app's single server (shared with the fallback)
+    try:
+        webview.create_window(aegis.BRAND, url_for(port), width=width, height=height,
+                              min_size=(600, 480))
+        webview.start()  # blocks on the main thread until the window closes
+    finally:
+        stop_server()   # srv.shutdown() + srv.server_close(): no port left bound
     return True
 
 

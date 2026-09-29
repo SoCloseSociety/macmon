@@ -288,20 +288,17 @@ def _confirm(title: str, message: str, ok: str = "OK") -> bool:
         return False
 
 
-_web_port = None  # the local dashboard server's port, once started
-
-
 def _ensure_web():
     """Start the local dashboard server once (idempotent). Returns its port,
-    or None if it could not start."""
-    global _web_port
-    if _web_port is None:
-        try:
-            from . import app_webui
-            _srv, _web_port = app_webui.serve()
-        except Exception:
-            _web_port = None
-    return _web_port
+    or None if it could not start. The cache is ``app_webui.ensure_server``'s
+    -- the same single server the native window uses, so the window-then-
+    fallback path never binds two."""
+    try:
+        from . import app_webui
+        _srv, port = app_webui.ensure_server()
+        return port
+    except Exception:
+        return None
 
 
 def open_dashboard(_=None):

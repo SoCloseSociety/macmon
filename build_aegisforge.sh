@@ -24,8 +24,10 @@ say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 
 # 1. Build deps (kept OUT of the CLI's runtime deps -- they live here only).
 say "Ensuring build deps (rumps, pyobjc, pyinstaller) in $VENV"
-# pyinstaller-hooks-contrib ships the pywebview hook that pulls the cocoa backend
-# + pyobjc WebKit automatically (per the fleet's Sentinel build).
+# pyinstaller-hooks-contrib's hook-webview.py only covers the WINDOWS backends;
+# on macOS it is the explicit `--collect-all webview` below (plus the pyobjc
+# hidden imports) that pulls the cocoa backend + WebKit bridge into the bundle.
+# hooks-contrib stays installed: harmless, and it covers other deps.
 "$PY" -m pip install -q --upgrade "pywebview>=5" "rumps>=0.4" "pyobjc-framework-Cocoa>=10" \
   pyinstaller pyinstaller-hooks-contrib >/dev/null
 
