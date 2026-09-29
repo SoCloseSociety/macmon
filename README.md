@@ -519,24 +519,25 @@ names the spawner and leaves stopping it to you.
 
 ### Native macOS app (AegisForge.app)
 
-Prefer a menu-bar app to the terminal? `AegisForge.app` is the menu-bar face of
-the same engine -- a monochrome ember-shield glyph in the status bar, tinted by
-the worst current finding, with a dropdown of live CPU/RAM/swap/load, the FORGE
-anticipation lines, recent alerts, and one-click actions (open the dashboard,
-clean, purge, pause/resume). It does not sample on its own -- it reads what the
-60s LaunchAgent sampler wrote, so there is no double work and no auto-remediation
-surprise. Build it (only needed for the app; the CLI never depends on it):
+Prefer a real app window to the terminal? `AegisForge.app` opens a native window
+(pywebview / WKWebView, Dock icon -- the fleet's Sentinel model) showing a
+branded live dashboard: CPU/RAM/swap/load bars, the FORGE anticipation lines,
+recent alerts, and a sample-age badge. It does not sample on its own -- it reads
+what the 60s LaunchAgent sampler wrote (over a loopback-only `127.0.0.1` HTTP
+origin, read-only), so there is no double work and no auto-remediation surprise.
+Build it (only needed for the app; the CLI never depends on it):
 
 ```bash
-pip install -e ".[app]"     # rumps + pyobjc, app-only
+pip install -e ".[app]"     # pywebview + rumps + pyobjc, app-only
 ./build_aegisforge.sh       # -> dist/AegisForge.app   (add --dmg for a disk image)
 open dist/AegisForge.app
 ```
 
 It builds like the fleet's Sentinel.app: PyInstaller `--windowed`, the
-ember-shield icon, an `LSUIElement` agent (menu bar only, no Dock icon), ad-hoc
-codesigned. It is a convenience shell -- every safety guarantee above still comes
-from the one engine.
+ember-shield icon, ad-hoc codesigned, a real windowed app (Dock icon). If
+pywebview is absent it degrades to a menu-bar agent that opens the dashboard in
+the browser. It is a convenience shell -- every safety guarantee above still
+comes from the one engine.
 
 ### Sentinel config
 

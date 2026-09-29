@@ -192,6 +192,24 @@ def open_in_browser(port: int) -> None:
         pass
 
 
+def run_window(port_pref: int = DEFAULT_PORT, width: int = 940, height: int = 700) -> bool:
+    """Open a NATIVE app window (pywebview/WKWebView) rendering the local
+    dashboard -- the fleet Sentinel pattern: a real window, not a browser tab,
+    pointed at a 127.0.0.1 HTTP origin (never file://). Blocks on the main
+    thread until the window closes. Returns False (without blocking) if pywebview
+    is unavailable, so the caller can fall back."""
+    try:
+        import webview
+    except ImportError:
+        return False
+    from . import aegis
+    _srv, port = serve(port_pref)  # local server in a daemon thread
+    webview.create_window(aegis.BRAND, url_for(port), width=width, height=height,
+                          min_size=(600, 480))
+    webview.start()  # blocks on the main thread until the window closes
+    return True
+
+
 def _free_port_note() -> int:
     """(used only by tests) a definitely-free port so a fallback can be forced."""
     s = socket.socket()

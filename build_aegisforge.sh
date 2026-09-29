@@ -24,7 +24,10 @@ say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 
 # 1. Build deps (kept OUT of the CLI's runtime deps -- they live here only).
 say "Ensuring build deps (rumps, pyobjc, pyinstaller) in $VENV"
-"$PY" -m pip install -q --upgrade "rumps>=0.4" "pyobjc-framework-Cocoa>=10" pyinstaller >/dev/null
+# pyinstaller-hooks-contrib ships the pywebview hook that pulls the cocoa backend
+# + pyobjc WebKit automatically (per the fleet's Sentinel build).
+"$PY" -m pip install -q --upgrade "pywebview>=5" "rumps>=0.4" "pyobjc-framework-Cocoa>=10" \
+  pyinstaller pyinstaller-hooks-contrib >/dev/null
 
 # 2. Render the monochrome menu-bar template glyph from the brand mono mark.
 MONO_SVG="${AEGIS_MONO_SVG:-../NeoBot-aegisforge-wt/compute-node/aegisforge-brand/icon/aegisforge-mark-mono.svg}"
@@ -42,25 +45,30 @@ fi
 
 # 3. Freeze. --windowed = .app bundle; collect the package + native-heavy deps
 # so the frozen app does not die with ModuleNotFoundError (the build_sentinel.sh
-# lesson). rumps + pyobjc need explicit collection.
+# lesson). pywebview (native window) + rumps (menu-bar fallback) need explicit
+# collection of their data files and pyobjc bridges.
 say "PyInstaller freeze -> dist/$APP_NAME.app"
 rm -rf "build/$APP_NAME" "dist/$APP_NAME.app"
 "$PYI" --noconfirm --windowed --name "$APP_NAME" \
   --icon "$ICNS" \
   --osx-bundle-identifier "$BUNDLE_ID" \
   --collect-submodules macmon_core \
+  --collect-all webview \
+  --collect-all objc \
   --collect-all rumps \
   --hidden-import psutil --hidden-import rich \
+  --hidden-import WebKit --hidden-import Foundation --hidden-import AppKit \
   --add-data "assets:assets" \
   aegisforge_app.py
 
 APP="dist/$APP_NAME.app"
 [ -d "$APP" ] || { echo "build failed: $APP not produced"; exit 1; }
 
-# 4. LSUIElement=1 -> menu-bar agent, no Dock icon / no window on launch.
+# 4. A normal windowed app (Dock icon + a native pywebview window), like the
+# fleet's Sentinel -- NOT an LSUIElement menu-bar-only agent (that showed no
+# window, so the app looked like it "didn't open").
 PLIST="$APP/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$PLIST" 2>/dev/null \
-  || /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$PLIST"
+/usr/libexec/PlistBuddy -c "Delete :LSUIElement" "$PLIST" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Set :CFBundleName AegisForge" "$PLIST" 2>/dev/null || true
 
 # 5. Ad-hoc codesign (no Apple Dev ID here; enough to launch locally).
@@ -68,7 +76,7 @@ say "Ad-hoc codesign"
 codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP" 2>/dev/null || true
 
 say "Built: $APP"
-say "Launch: open '$APP'   (look for the ember-shield glyph in the menu bar)"
+say "Launch: open '$APP'   (a native AegisForge window opens)"
 
 if [ "${1:-}" = "--dmg" ]; then
   say "Packaging .dmg"
