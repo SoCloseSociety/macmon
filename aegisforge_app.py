@@ -2,10 +2,13 @@
 """PyInstaller entry point for AegisForge.app (the macOS app).
 
 Prefers a NATIVE app window (pywebview/WKWebView) rendering the local dashboard
--- the fleet Sentinel pattern: a real window, not a browser tab. Falls back to
-the menu-bar agent (which opens the dashboard in the browser) if pywebview is
-absent, then to a helpful message. All logic lives in macmon_core so the CLI and
-the .app share one engine. Build with ./build_aegisforge.sh.
+-- the fleet Sentinel pattern: a real window, not a browser tab. That window is
+a READ-ONLY dashboard: it has no menu bar and exposes no action; clean / purge /
+pause / resume are run from the ``macmon`` CLI. Falls back to the menu-bar
+agent (which opens the dashboard in the browser and DOES carry the action
+items) if pywebview is absent, then to a helpful message. All logic lives in
+macmon_core so the CLI and the .app share one engine. Build with
+./build_aegisforge.sh.
 """
 
 
