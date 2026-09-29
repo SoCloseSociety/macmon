@@ -39,12 +39,16 @@ SAFETY INVARIANTS (each is locked by tests/test_aegis.py):
      terminals/shells/multiplexers, the user's apps under /Applications and
      anything under /System, /usr/libexec, /usr/sbin.
   5. Before a proven leak is reaped it must also be idle (< 1% CPU, itself and
-     its descendants) for `reap_idle_samples` consecutive samples, hold no
-     ESTABLISHED TCP connection (unknown => skip), still be reparented to PID 1
-     at signal time, and the signal is SIGTERM -- never SIGKILL.
+     its descendants) for `reap_idle_samples` consecutive samples, hold no live
+     socket -- no ESTABLISHED connection, and for the node/python families no
+     LISTEN or bound unix socket either: an idle backgrounded dev server is
+     still in service (unknown => skip) -- still be reparented to PID 1 at
+     signal time, and the signal is SIGTERM -- never SIGKILL. In one line:
+     never a workload with a live parent or an active/listening socket.
 """
 import os
 import signal
+import socket
 from collections import Counter
 from dataclasses import dataclass
 
@@ -118,6 +122,82 @@ def _int(cfg: dict, key: str, default: int, lo: int = 0) -> int:
         return max(lo, default)
 
 
+_TRUE_WORDS = {"1", "true", "yes", "on"}
+_FALSE_WORDS = {"0", "false", "no", "off", ""}
+
+
+def _bool(cfg: dict, key: str, default: bool = False) -> bool:
+    """A flag that may have been hand-typed into the conf. Raw truthiness would
+    turn `"auto_reap_orphans": "false"` into ON -- so the false words are
+    False, only the usual true words are True, and anything unrecognised is
+    the default (every auto_* flag defaults to off)."""
+    v = cfg.get(key, default)
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        w = v.strip().lower()
+        if w in _TRUE_WORDS:
+            return True
+        if w in _FALSE_WORDS:
+            return False
+    return bool(default)
+
+
+# Row-field readers: metrics.jsonl is append-only and written by every sampler
+# version there ever was, so a field may be missing, null or the wrong shape.
+# A bad field degrades to "no data", never to a crash (a crash in the analyze
+# stage used to abort the sample before its state was persisted).
+
+def _as_float(v, default: float = 0.0) -> float:
+    try:
+        return float(v) if v is not None else float(default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _as_int(v, default: int = 0) -> int:
+    try:
+        return int(v) if v is not None else int(default)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _ts(r: dict, default: float) -> float:
+    ts = r.get("ts")
+    return float(ts) if isinstance(ts, (int, float)) else float(default)
+
+
+def _pair(v) -> list:
+    """[under-PID-1, proven-leaks] from a record's 'orph'; [0, 0] when malformed."""
+    try:
+        return [int(v[0]), int(v[1])]
+    except (TypeError, ValueError, IndexError, KeyError):
+        return [0, 0]
+
+
+def _counts(v) -> dict:
+    """{name: int} from a record's 'fam' / 'pc'; junk entries dropped."""
+    if not isinstance(v, dict):
+        return {}
+    return {str(k): int(c) for k, c in v.items() if isinstance(c, (int, float))}
+
+
+def _tuples(v, n: int) -> list:
+    """Well-formed [name, num, ...] entries of length n from a top-N list."""
+    out = []
+    for e in (v if isinstance(v, (list, tuple)) else []):
+        if (isinstance(e, (list, tuple)) and len(e) == n and isinstance(e[0], str)
+                and all(isinstance(x, (int, float)) for x in e[1:])):
+            out.append(list(e))
+    return out
+
+
+def _strs(v) -> list:
+    return [str(x) for x in v] if isinstance(v, (list, tuple)) else []
+
+
 # ── Trend / slope math (anticipation) ────────────────────────────────────
 
 def slope_per_min(points: list[tuple[float, float]]) -> float:
@@ -125,7 +205,7 @@ def slope_per_min(points: list[tuple[float, float]]) -> float:
 
     Needs at least 3 points and some spread in time; otherwise 0.0 (no trend
     claim is ever made from too little evidence)."""
-    pts = [(float(t), float(v)) for t, v in points if t is not None and v is not None]
+    pts = [(float(t), float(v)) for t, v in points if isinstance(t, (int, float)) and isinstance(v, (int, float))]
     if len(pts) < 3:
         return 0.0
     t0 = pts[0][0]
@@ -523,26 +603,27 @@ class Finding:
 
 def trends(rows: list[dict], cfg: dict, now: float) -> dict:
     """Slopes, ETAs, sustained counts and growth figures the detectors and the
-    console share. Empty dict when there is no history."""
+    console share. Empty dict when there is no history. Null-tolerant: a
+    missing / null / misshapen field in any row reads as "no data"."""
     if not rows:
         return {}
     latest = rows[-1]
     n = _int(cfg, "trend_window", 10, lo=3)
     recent = recent_rows(rows, n, now) or [latest]
 
-    swap = float(latest.get("swap_gb") or 0.0)
-    ram = float(latest.get("ram") or 0.0)
+    swap = _as_float(latest.get("swap_gb"))
+    ram = _as_float(latest.get("ram"))
     swap_slope = slope_per_min([(r.get("ts"), r.get("swap_gb")) for r in recent])
     ram_slope = slope_per_min([(r.get("ts"), r.get("ram")) for r in recent])
     swap_crit = _num(cfg, "swap_critical_gb", 8.0)
     ram_crit = _num(cfg, "ram_critical", 90.0)
 
-    ncpu = int(latest.get("ncpu") or 0) or (psutil.cpu_count() or 1)
-    load1 = float(latest.get("load1") or 0.0)
+    ncpu = _as_int(latest.get("ncpu")) or (psutil.cpu_count() or 1)
+    load1 = _as_float(latest.get("load1"))
     factor = _num(cfg, "load_factor", 2.0)
     sustained = 0
     for r in reversed(recent):
-        if float(r.get("load1") or 0.0) > ncpu * factor:
+        if _as_float(r.get("load1")) > ncpu * factor:
             sustained += 1
         else:
             break
@@ -553,28 +634,41 @@ def trends(rows: list[dict], cfg: dict, now: float) -> dict:
     # process fields ("orph" marks the new record format): right after an
     # upgrade or a fresh install the base has none, and "0 -> 16" would be a
     # fabricated swarm.
-    fam_now = latest.get("fam") or {}
-    fam_base = (base.get("fam") or {}) if "orph" in base else dict(fam_now)
-    pc_now = latest.get("pc") or {}
-    pc_base = (base.get("pc") or {}) if "orph" in base else dict(pc_now)
-    orph = latest.get("orph") or [0, 0]
-    orph_base = recent[0].get("orph") if "orph" in recent[0] else orph
-    span = (latest.get("ts", now) - recent[0].get("ts", now)) / 60.0 if len(recent) > 1 else 0.0
+    fam_now = _counts(latest.get("fam"))
+    fam_base = _counts(base.get("fam")) if "orph" in base else dict(fam_now)
+    pc_now = _counts(latest.get("pc"))
+    pc_base = _counts(base.get("pc")) if "orph" in base else dict(pc_now)
+    orph = _pair(latest.get("orph"))
+    orph_base = _pair(recent[0].get("orph")) if "orph" in recent[0] else orph
+    span = (_ts(latest, now) - _ts(recent[0], now)) / 60.0 if len(recent) > 1 else 0.0
+    # The span the growth figures really cover: `w` samples when the history
+    # is that long, the whole (shorter) history otherwise.
+    growth_min = (_ts(latest, now) - _ts(base, now)) / 60.0
 
     return {
         "swap": {"gb": swap, "slope": swap_slope, "eta": eta_minutes(swap, swap_crit, swap_slope), "crit": swap_crit},
         "ram": {"pct": ram, "slope": ram_slope, "eta": eta_minutes(ram, ram_crit, ram_slope), "crit": ram_crit},
         "load": {"load1": load1, "ncpu": ncpu, "ratio": load1 / max(1, ncpu), "sustained": sustained, "factor": factor},
-        "swarm": {f: {"count": int(c), "growth": int(c) - int(fam_base.get(f, 0))} for f, c in fam_now.items()},
-        "names": {nm: {"count": int(c), "growth": int(c) - int(pc_base.get(nm, 0))} for nm, c in pc_now.items()},
-        "spawn": latest.get("spawn") or "",
-        "leaks": {"p1": int(orph[0]), "leak": int(orph[1]), "growth": int(orph[1]) - int(orph_base[1]),
-                  "names": latest.get("leakn") or []},
-        "topn": latest.get("topn") or [],
-        "toprss": latest.get("toprss") or [],
+        "swarm": {f: {"count": c, "growth": c - fam_base.get(f, 0)} for f, c in fam_now.items()},
+        "names": {nm: {"count": c, "growth": c - pc_base.get(nm, 0)} for nm, c in pc_now.items()},
+        "spawn": str(latest.get("spawn") or ""),
+        "leaks": {"p1": orph[0], "leak": orph[1], "growth": orph[1] - orph_base[1],
+                  "names": _strs(latest.get("leakn"))},
+        "topn": _tuples(latest.get("topn"), 3),
+        "toprss": _tuples(latest.get("toprss"), 2),
         "span_min": max(0.0, span),
+        "growth_min": max(0.0, growth_min),
         "points": len(recent),
     }
+
+
+def growth_span(t: dict, cfg: dict) -> int:
+    """Minutes the swarm growth figures actually cover, for the alert text:
+    the real span when the history is shorter than the window (a '+40 in 2
+    min' right after a start must not be labelled '5 min'), else the window."""
+    w = _int(cfg, "swarm_window", 5, lo=1)
+    gm = t.get("growth_min")
+    return max(1, round(gm)) if isinstance(gm, (int, float)) and gm > 0 else w
 
 
 def _rss_note(t: dict) -> str:
@@ -633,7 +727,7 @@ def detect_swarm(t: dict, cfg: dict) -> list:
     """Alert-only by design: names the family, the growth and the spawner.
     Nothing here (or downstream of it) signals a process."""
     out = []
-    w = _int(cfg, "swarm_window", 5, lo=1)
+    span = growth_span(t, cfg)
     h = (t.get("swarm") or {}).get("headless")
     if h:
         h_min = _int(cfg, "swarm_headless_min", 8, lo=1)
@@ -642,7 +736,7 @@ def detect_swarm(t: dict, cfg: dict) -> list:
         if h["count"] >= h_min and (h["growth"] >= h_growth or h["count"] >= h_max):
             by = t.get("spawn") or "an unknown spawner"
             out.append(Finding("swarm:headless", "process swarm",
-                               f"{h['count']} headless browser processes (+{max(0, h['growth'])} in {w} min), "
+                               f"{h['count']} headless browser processes (+{max(0, h['growth'])} in {span} min), "
                                f"spawned by {by}. Not auto-killed (live workload) -- stop the spawner yourself if unintended.",
                                900, "high"))
     s_min = _int(cfg, "swarm_min", 24, lo=1)
@@ -650,7 +744,7 @@ def detect_swarm(t: dict, cfg: dict) -> list:
     for name, v in (t.get("names") or {}).items():
         if v["count"] >= s_min and v["growth"] >= s_growth:
             out.append(Finding(f"swarm:{name}", "process swarm",
-                               f"{v['count']} '{name}' processes (+{v['growth']} in {w} min) -- an executable is "
+                               f"{v['count']} '{name}' processes (+{v['growth']} in {span} min) -- an executable is "
                                f"multiplying. Not auto-killed (live workload); check 'macmon ps --tree'.",
                                900, "high"))
     return out
@@ -662,7 +756,7 @@ def detect_leaks(t: dict, cfg: dict):
         return None
     growth = f", +{lk['growth']} over the window" if lk["growth"] > 0 else ""
     names = ", ".join(lk.get("names") or []) or "dev processes"
-    if cfg.get("auto_reap_orphans"):
+    if _bool(cfg, "auto_reap_orphans"):
         tail = f"Auto-reap is ON: idle ones are reaped after {_int(cfg, 'reap_idle_samples', 5, lo=1)} samples."
     else:
         tail = "Auto-reap is OFF: run 'macmon sentinel --reap-orphans', or enable with --enable-auto --reap."
@@ -688,18 +782,45 @@ def analyze(rows: list[dict], cfg: dict, now: float) -> list:
 
 REAP_COOLDOWN = 600
 DEFAULT_REAP_FAMILIES = list(FAMILIES)
+_AF_UNIX = getattr(socket, "AF_UNIX", None)   # absent on some Windows builds
 
 
-def _established(pid: int):
-    """True if the process (or a descendant) has an ESTABLISHED TCP connection,
-    False if none, None when it cannot be determined (=> caller must skip)."""
+def reap_families(cfg: dict) -> list:
+    """The families auto-reap may touch. Missing => the default set; a list =>
+    as given (empty means none); anything else -- a bare string, a dict, a
+    number -- is malformed and narrows to NOTHING, never widens to everything."""
+    v = cfg.get("reap_families")
+    if v is None:
+        return list(DEFAULT_REAP_FAMILIES)
+    if isinstance(v, (list, tuple, set)):
+        return [f for f in v if isinstance(f, str)]
+    return []
+
+
+def _in_service(pid: int, family=None):
+    """Is the process (or a descendant) serving or talking to anyone?
+
+    True on an ESTABLISHED connection -- and, for every family but 'headless',
+    on a mere LISTEN or a bound unix socket: an idle backgrounded dev server
+    with no client right now is still in service and must never be "reaped".
+    Puppeteer/playwright's Chrome stays reapable while only listening, because
+    its remote-debugging port is what a leaked automation browser looks like,
+    not a service anyone uses. Unnamed unix sockets (socketpair IPC plumbing)
+    count for nobody. False when nothing of the kind is open; None when it
+    cannot be determined (=> caller must skip). An unknown family reads as a
+    server (the safe reading)."""
+    listening_counts = family != "headless"
     try:
         p = psutil.Process(pid)
         procs = [p] + p.children(recursive=True)
         for q in procs:
-            conns = q.net_connections(kind="inet") if hasattr(q, "net_connections") else q.connections(kind="inet")
-            if any(c.status == psutil.CONN_ESTABLISHED for c in conns):
-                return True
+            conns = q.net_connections(kind="all") if hasattr(q, "net_connections") else q.connections(kind="all")
+            for c in conns:
+                if c.status == psutil.CONN_ESTABLISHED:
+                    return True
+                if listening_counts and (c.status == psutil.CONN_LISTEN
+                                         or (_AF_UNIX is not None and c.family == _AF_UNIX and c.laddr)):
+                    return True
         return False
     except psutil.NoSuchProcess:
         return None
@@ -732,14 +853,13 @@ def reap_leaks(leaks: list[dict], cfg: dict, astate: dict, now: float) -> list:
 
     Every list entry here already passed: ppid == 1, dev family, never-touch
     (see observe_table). This adds: family allow-list, not busy, idle streak,
-    no ESTABLISHED connection (unknown => skip), still leaked NOW, SIGTERM."""
-    if not cfg.get("auto_reap_orphans") or not leaks:
+    not in service (no ESTABLISHED connection; for node/python no LISTEN or
+    bound unix socket either; unknown => skip), still leaked NOW, SIGTERM."""
+    if not _bool(cfg, "auto_reap_orphans") or not leaks:
         return []
     if now - float(astate.get("_reap", 0) or 0) < REAP_COOLDOWN:
         return []
-    families = cfg.get("reap_families") or DEFAULT_REAP_FAMILIES
-    if not isinstance(families, (list, tuple, set)):
-        families = DEFAULT_REAP_FAMILIES
+    families = reap_families(cfg)
     idle_needed = _int(cfg, "reap_idle_samples", 5, lo=1)
     cap = _int(cfg, "reap_max", 40, lo=1)
     streaks = astate.get("leak_streak") or {}
@@ -754,7 +874,7 @@ def reap_leaks(leaks: list[dict], cfg: dict, astate: dict, now: float) -> list:
             continue
         if never_touch(L) or L.get("ppid") != 1:      # belt and braces
             continue
-        if _established(pid) is not False:
+        if _in_service(pid, L.get("family")) is not False:
             continue
         if not _still_leaked(pid, L["ct"]):
             continue

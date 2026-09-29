@@ -11,16 +11,24 @@ The invariants locked here (see the module docstring of aegis.py):
   3. only a LINEAGE-proven dead parent (watched by an earlier sample) makes a leak
   4. the never-touch set (IDE, agent sessions, ollama, fleet, VMs, shells, system
      paths, user apps, other users) is applied before anything else
-  5. a proven leak is reaped only when opt-in + idle N samples + no ESTABLISHED
-     connection + still under PID 1 at signal time, and only with SIGTERM
+  5. a proven leak is reaped only when opt-in + idle N samples + not in service
+     (no ESTABLISHED connection; for node/python no LISTEN / bound unix socket
+     either) + still under PID 1 at signal time, and only with SIGTERM
+  6. config flags are coerced, never read by raw truthiness: the string
+     "false" never enables an auto_* feature, a malformed reap_families
+     reaps nothing
+  7. a failing stage in run_sample never loses the persisted state
 """
 import inspect
 import json
 import os
 import signal
+import socket
+import sys
 import time
 import types
 
+import psutil
 import pytest
 
 from macmon_core import aegis, sentinel
@@ -74,7 +82,6 @@ def no_signals(monkeypatch):
     """Any attempt to signal a process fails the test."""
     def boom(*a, **k):
         raise AssertionError("a process was signalled")
-    import psutil
     monkeypatch.setattr(os, "kill", boom)
     monkeypatch.setattr(psutil.Process, "terminate", boom)
     monkeypatch.setattr(psutil.Process, "kill", boom)
@@ -419,6 +426,31 @@ class TestDetectors:
         for token in ("os.kill", ".kill(", ".terminate(", "_terminate(", "send_signal", "SIGTERM", "SIGKILL", "reap_leaks"):
             assert token not in src, token
 
+    def test_swarm_growth_label_uses_the_real_span_when_history_is_short(self):
+        # Three samples two minutes apart: the label must not claim the 5-min window.
+        r = rows([{"headless": 5}, {"headless": 5}, {"headless": 45}], key="fam", spawn="node shoot.mjs (pid 1)")
+        f = _find(aegis.analyze(r, CFG, NOW), "swarm:headless")
+        assert f is not None and "(+40 in 2 min)" in f.msg
+        assert aegis.growth_span(aegis.trends(r, CFG, NOW), CFG) == 2
+        long = rows([{"headless": 5}] * 5 + [{"headless": 45}] * 5, key="fam")
+        assert "(+40 in 5 min)" in _find(aegis.analyze(long, CFG, NOW), "swarm:headless").msg
+        assert aegis.growth_span({}, CFG) == 5                       # no span known: the window
+
+    def test_trends_tolerates_null_and_misshapen_fields(self):
+        r = rows([1.0] * 4)
+        r[0]["orph"] = [None, None]
+        r[-1].update({"orph": None, "toprss": [None, ["x"], ["Chrome", "big"], ["Chrome", 512]],
+                      "topn": [["node"], None, ["node", 312.0, 4242]], "fam": "junk", "pc": None,
+                      "leakn": "junk", "ncpu": "many", "load1": None, "spawn": None, "swap_gb": "n/a"})
+        t = aegis.trends(r, CFG, NOW)
+        assert t["toprss"] == [["Chrome", 512]] and t["topn"] == [["node", 312.0, 4242]]
+        assert t["swarm"] == {} and t["names"] == {} and t["spawn"] == ""
+        assert t["leaks"] == {"p1": 0, "leak": 0, "growth": 0, "names": []}
+        assert t["swap"]["gb"] == 0.0 and t["load"]["load1"] == 0.0
+        assert aegis.analyze(r, CFG, NOW) == []
+        r[-1]["ts"] = None                                          # even the timestamp
+        assert aegis.analyze(r, CFG, NOW) == []
+
 
 # ── Sentinel firing + cooldowns ──────────────────────────────────────────
 
@@ -460,7 +492,7 @@ class TestReapInvariants:
         forge, astate = _proven_leak_state()
         sent = []
         monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append((pid, sig)))
-        monkeypatch.setattr(aegis, "_established", lambda pid: False)
+        monkeypatch.setattr(aegis, "_in_service", lambda pid, fam: False)
         monkeypatch.setattr(aegis, "_still_leaked", lambda pid, ct: True)
         done = aegis.reap_leaks(forge["leaks"], {**CFG, "auto_reap_orphans": True}, astate, NOW)
         assert sent == [(5000, signal.SIGTERM)]
@@ -485,7 +517,7 @@ class TestReapInvariants:
             astate["leak_streak"] = {"5000": patch["streak"]}
         if "families" in patch:
             cfg["reap_families"] = patch["families"]
-        monkeypatch.setattr(aegis, "_established", lambda pid: patch.get("established", False))
+        monkeypatch.setattr(aegis, "_in_service", lambda pid, fam: patch.get("established", False))
         monkeypatch.setattr(aegis, "_still_leaked", lambda pid, ct: patch.get("still", True))
         assert aegis.reap_leaks(leaks, cfg, astate, NOW) == [], why
 
@@ -493,7 +525,7 @@ class TestReapInvariants:
         forge, astate = _proven_leak_state(n=5)
         sent = []
         monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append(pid))
-        monkeypatch.setattr(aegis, "_established", lambda pid: False)
+        monkeypatch.setattr(aegis, "_in_service", lambda pid, fam: False)
         monkeypatch.setattr(aegis, "_still_leaked", lambda pid, ct: True)
         cfg = {**CFG, "auto_reap_orphans": True, "reap_max": 2}
         assert len(aegis.reap_leaks(forge["leaks"], cfg, astate, NOW)[0][1]) > 0 and len(sent) == 2
@@ -560,6 +592,173 @@ class TestReapInvariants:
         assert c["auto_reap_orphans"] is False and c["auto_trim_fleet"] is False and c["auto_purge"] is False
 
 
+# ── In-service check: LISTEN / unix sockets (the reap safety line) ───────
+
+def _conn(status, family=socket.AF_INET, laddr=("127.0.0.1", 3000)):
+    return types.SimpleNamespace(status=status, family=family, laddr=laddr, raddr=())
+
+
+def _fake_process_table(monkeypatch, conns_by_pid: dict, children=()):
+    """psutil.Process stand-in: connections per pid (or an exception to raise),
+    `children` as the root's descendants. Records the socket `kind` asked for."""
+    kinds = []
+
+    class _P:
+        def __init__(self, pid):
+            if pid not in conns_by_pid:
+                raise psutil.NoSuchProcess(pid)
+            self.pid = pid
+
+        def children(self, recursive=False):
+            return [_P(c) for c in children]
+
+        def net_connections(self, kind="inet"):
+            kinds.append(kind)
+            v = conns_by_pid[self.pid]
+            if isinstance(v, Exception):
+                raise v
+            return v
+
+    monkeypatch.setattr(aegis.psutil, "Process", _P)
+    return kinds
+
+
+class TestInService:
+    def test_a_listening_dev_server_is_in_service(self, monkeypatch):
+        _fake_process_table(monkeypatch, {7: [_conn(psutil.CONN_LISTEN)]})
+        assert aegis._in_service(7, "node") is True
+        assert aegis._in_service(7, "python") is True
+        assert aegis._in_service(7, None) is True          # unknown family: the safe reading
+
+    def test_headless_stays_reapable_while_only_listening(self, monkeypatch):
+        # puppeteer's --remote-debugging-port is what a leaked automation
+        # browser looks like, not a service anyone uses
+        _fake_process_table(monkeypatch, {7: [_conn(psutil.CONN_LISTEN, laddr=("127.0.0.1", 9222))]})
+        assert aegis._in_service(7, "headless") is False
+
+    def test_established_counts_for_every_family(self, monkeypatch):
+        _fake_process_table(monkeypatch, {7: [_conn(psutil.CONN_ESTABLISHED)]})
+        assert aegis._in_service(7, "headless") is True
+        assert aegis._in_service(7, "node") is True
+
+    def test_bound_unix_socket_is_a_service_unnamed_is_plumbing(self, monkeypatch):
+        unix = getattr(socket, "AF_UNIX", None)
+        if unix is None:
+            pytest.skip("no AF_UNIX on this platform")
+        _fake_process_table(monkeypatch, {7: [_conn(psutil.CONN_NONE, family=unix, laddr="/tmp/app.sock")],
+                                          8: [_conn(psutil.CONN_NONE, family=unix, laddr="")]})
+        assert aegis._in_service(7, "python") is True
+        assert aegis._in_service(7, "headless") is False
+        assert aegis._in_service(8, "node") is False        # socketpair IPC, no name
+
+    def test_descendant_sockets_count(self, monkeypatch):
+        _fake_process_table(monkeypatch, {7: [], 8: [_conn(psutil.CONN_LISTEN)]}, children=(8,))
+        assert aegis._in_service(7, "node") is True
+
+    def test_unknown_is_none_and_every_socket_kind_is_asked_for(self, monkeypatch):
+        kinds = _fake_process_table(monkeypatch, {7: psutil.AccessDenied(7), 9: []})
+        assert aegis._in_service(7, "node") is None
+        assert aegis._in_service(424242, "node") is None    # NoSuchProcess
+        assert aegis._in_service(9, "node") is False
+        assert kinds and set(kinds) == {"all"}
+
+    def test_reap_spares_a_listening_node_leak_and_still_reaps_a_listening_headless_leak(self, monkeypatch):
+        cfg = {**CFG, "auto_reap_orphans": True}
+        # A `node server.js` whose shell died: proven leak, idle for 5 samples,
+        # LISTEN only -- a backgrounded dev server between two requests.
+        t1 = [LAUNCHD(), P(3000, 900, "zsh", exe="/bin/zsh"), P(4100, 3000, "node", cmd=f"{NODE} server.js", exe=NODE)]
+        t2 = [LAUNCHD(), P(4100, 1, "node", cmd=f"{NODE} server.js", exe=NODE)]
+        astate = {}
+        aegis.observe_table(t1, astate, cfg, 12)
+        forge = None
+        for _ in range(5):
+            forge = aegis.observe_table(t2, astate, cfg, 12)
+        assert [(L["pid"], L["family"]) for L in forge["leaks"]] == [(4100, "node")]
+        assert astate["leak_streak"] == {"4100": 5}
+        sent = []
+        monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append((pid, sig)))
+        monkeypatch.setattr(aegis, "_still_leaked", lambda pid, ct: True)
+        _fake_process_table(monkeypatch, {4100: [_conn(psutil.CONN_LISTEN)]})
+        assert aegis.reap_leaks(forge["leaks"], cfg, astate, NOW) == []
+        assert sent == [] and "_reap" not in astate
+        # The same LISTEN-only picture on a leaked puppeteer Chrome is reapable.
+        forge_h, astate_h = _proven_leak_state()
+        _fake_process_table(monkeypatch, {5000: [_conn(psutil.CONN_LISTEN, laddr=("127.0.0.1", 9222))]})
+        done = aegis.reap_leaks(forge_h["leaks"], cfg, astate_h, NOW)
+        assert sent == [(5000, signal.SIGTERM)] and done and done[0][0] == "auto_reap"
+
+    def test_reap_asks_the_check_with_the_candidates_family(self, monkeypatch, no_signals):
+        forge, astate = _proven_leak_state()
+        asked = []
+        monkeypatch.setattr(aegis, "_in_service", lambda pid, fam: asked.append((pid, fam)) or True)
+        assert aegis.reap_leaks(forge["leaks"], {**CFG, "auto_reap_orphans": True}, astate, NOW) == []
+        assert asked == [(5000, "headless")]
+
+
+# ── Config coercion: flags and lists from a hand-edited JSON conf ────────
+
+class TestConfigCoercion:
+    @pytest.mark.parametrize("raw", ["false", "False", " off ", "0", "", "no", None, 0, 0.0])
+    def test_false_words_are_false(self, raw):
+        assert aegis._bool({"auto_reap_orphans": raw}, "auto_reap_orphans") is False
+
+    @pytest.mark.parametrize("raw", [True, "true", "TRUE", "yes", "on", "1", 1])
+    def test_true_words_are_true(self, raw):
+        assert aegis._bool({"k": raw}, "k") is True
+
+    def test_unrecognised_is_the_default(self):
+        assert aegis._bool({"k": "maybe"}, "k") is False
+        assert aegis._bool({"k": ["x"]}, "k") is False
+        assert aegis._bool({}, "k") is False and aegis._bool({}, "k", default=True) is True
+
+    @pytest.mark.parametrize("raw", ["false", "off", "0", ""])
+    def test_string_false_never_enables_auto_reap(self, monkeypatch, no_signals, raw):
+        forge, astate = _proven_leak_state()
+        monkeypatch.setattr(aegis, "_in_service", lambda pid, fam: False)
+        monkeypatch.setattr(aegis, "_still_leaked", lambda pid, ct: True)
+        cfg = {**CFG, "auto_reap_orphans": raw}
+        assert aegis.reap_leaks(forge["leaks"], cfg, astate, NOW) == []
+        f = _find(aegis.analyze(rows([[10, 3]] * 10, key="orph"), cfg, NOW), "leaks")
+        assert "Auto-reap is OFF" in f.msg
+
+    def test_reap_families_missing_explicit_and_malformed(self):
+        assert aegis.reap_families({}) == ["headless", "node", "python"]
+        assert aegis.reap_families({"reap_families": None}) == ["headless", "node", "python"]
+        assert aegis.reap_families({"reap_families": ["node", 5, None]}) == ["node"]
+        assert aegis.reap_families({"reap_families": []}) == []
+        for raw in ("node", "headless,node", {"headless": True}, 3, True):
+            assert aegis.reap_families({"reap_families": raw}) == [], raw
+
+    @pytest.mark.parametrize("raw", ["headless", {"headless": True}, 3])
+    def test_malformed_reap_families_reaps_nothing(self, monkeypatch, no_signals, raw):
+        forge, astate = _proven_leak_state()
+        monkeypatch.setattr(aegis, "_in_service", lambda pid, fam: False)
+        monkeypatch.setattr(aegis, "_still_leaked", lambda pid, ct: True)
+        cfg = {**CFG, "auto_reap_orphans": True, "reap_families": raw}
+        assert aegis.reap_leaks(forge["leaks"], cfg, astate, NOW) == []
+
+    def test_string_false_never_enables_trim_purge_or_unload(self, monkeypatch):
+        ns = types.SimpleNamespace
+        vm, sw = ns(percent=97.0), ns(used=12e9)          # critical on both counts
+        sessions = [{"pid": 100 + i, "cpu": 0.0, "rss": 0, "start": i} for i in range(8)]
+        streaks = {str(s["pid"]): 99 for s in sessions}
+        oll = {"gb": 6.0, "models": ["llama3"], "busy": False}
+
+        def boom(*a, **k):
+            raise AssertionError("remediation acted on a string 'false'")
+        monkeypatch.setattr(sentinel, "_trim_fleet", boom)
+        monkeypatch.setattr(sentinel, "_unload_ollama", boom)
+        monkeypatch.setattr(sentinel.subprocess, "run", boom)
+        monkeypatch.setattr(sentinel, "_notify", lambda t, m: None)
+        cfg = {**CFG, "auto_trim_fleet": "false", "auto_purge": "off", "auto_unload_ollama": "0"}
+        assert sentinel._remediate(vm, sw, cfg, {}, NOW, sessions, streaks, oll) == []
+        # control: a real True does trim, so the coercion is what blocked it above
+        called = []
+        monkeypatch.setattr(sentinel, "_trim_fleet", lambda *a, **k: called.append(a) or [101, 102])
+        done = sentinel._remediate(vm, sw, {**CFG, "auto_trim_fleet": True}, {}, NOW, sessions, streaks, oll)
+        assert called and [k for k, _ in done] == ["auto_trim"]
+
+
 # ── Sentinel integration (hermetic run_sample) ───────────────────────────
 
 def _redirect(monkeypatch, tmp_path):
@@ -568,28 +767,37 @@ def _redirect(monkeypatch, tmp_path):
     monkeypatch.setattr(sentinel, "MACMON_DIR", tmp_path)
 
 
+def _hermetic_sample(monkeypatch, tmp_path, swap_used=5.5e9, forge=None):
+    """run_sample() with every probe stubbed (no process scan, no ping, no
+    ollama, no notifier). Returns the list that collects notifications."""
+    _redirect(monkeypatch, tmp_path)
+    ns = types.SimpleNamespace
+    ps = sentinel.psutil
+    monkeypatch.setattr(ps, "process_iter", lambda *a, **k: [])
+    monkeypatch.setattr(ps, "cpu_percent", lambda interval=None: 12.0)
+    monkeypatch.setattr(ps, "virtual_memory", lambda: ns(percent=80.0))
+    monkeypatch.setattr(ps, "swap_memory", lambda: ns(used=swap_used))
+    monkeypatch.setattr(ps, "disk_usage", lambda p: ns(free=100e9))
+    monkeypatch.setattr(sentinel, "load_average", lambda: (1.0, 1.0, 1.0))
+    monkeypatch.setattr(sentinel, "_ai_fleet", lambda: {"claude": [0, 0], "codex": [0, 0], "mcp": [0, 0]})
+    monkeypatch.setattr(sentinel, "_top_proc", lambda: ("x", 1.0, 10))
+    monkeypatch.setattr(sentinel, "_ping_rtt", lambda: None)
+    monkeypatch.setattr(sentinel, "_ollama_status", lambda: {"gb": 0.0, "models": [], "busy": False})
+    monkeypatch.setattr(sentinel, "_vm_status", lambda: {"gb": 0.0, "owner": ""})
+    monkeypatch.setattr(sentinel, "_claude_sessions", lambda: [])
+    forge = forge or {"record": {"ncpu": 12, "fam": {}, "pc": {}, "orph": [0, 0], "topn": [], "toprss": []},
+                      "leaks": [], "cands": [], "streaks": {}}
+    monkeypatch.setattr(sentinel.aegis, "observe", lambda astate, cfg: forge)
+    notes = []
+    monkeypatch.setattr(sentinel, "_notify", lambda t, m: notes.append((t, m)))
+    return notes
+
+
 class TestSentinelIntegration:
     def test_run_sample_records_forge_fields_fires_branded_alert_and_never_signals(self, tmp_path, monkeypatch, no_signals):
-        _redirect(monkeypatch, tmp_path)
-        ns = types.SimpleNamespace
-        ps = sentinel.psutil
-        monkeypatch.setattr(ps, "process_iter", lambda *a, **k: [])
-        monkeypatch.setattr(ps, "cpu_percent", lambda interval=None: 12.0)
-        monkeypatch.setattr(ps, "virtual_memory", lambda: ns(percent=80.0))
-        monkeypatch.setattr(ps, "swap_memory", lambda: ns(used=5.5e9))
-        monkeypatch.setattr(ps, "disk_usage", lambda p: ns(free=100e9))
-        monkeypatch.setattr(sentinel, "load_average", lambda: (1.0, 1.0, 1.0))
-        monkeypatch.setattr(sentinel, "_ai_fleet", lambda: {"claude": [0, 0], "codex": [0, 0], "mcp": [0, 0]})
-        monkeypatch.setattr(sentinel, "_top_proc", lambda: ("x", 1.0, 10))
-        monkeypatch.setattr(sentinel, "_ping_rtt", lambda: None)
-        monkeypatch.setattr(sentinel, "_ollama_status", lambda: {"gb": 0.0, "models": [], "busy": False})
-        monkeypatch.setattr(sentinel, "_vm_status", lambda: {"gb": 0.0, "owner": ""})
-        monkeypatch.setattr(sentinel, "_claude_sessions", lambda: [])
         forge = {"record": {"ncpu": 12, "fam": {"headless": 59}, "pc": {}, "orph": [0, 0], "topn": [], "toprss": [],
                             "spawn": "node shoot.mjs (pid 4242)"}, "leaks": [], "cands": [], "streaks": {}}
-        monkeypatch.setattr(sentinel.aegis, "observe", lambda astate, cfg: forge)
-        notes = []
-        monkeypatch.setattr(sentinel, "_notify", lambda t, m: notes.append((t, m)))
+        notes = _hermetic_sample(monkeypatch, tmp_path, forge=forge)
         now = int(time.time())
         with open(sentinel.METRICS, "w") as f:
             # flat swap/RAM history matching the sampled values: only the swarm may fire
@@ -615,6 +823,102 @@ class TestSentinelIntegration:
         assert sentinel.METRICS.stat().st_size > 256 * 1024
         got = sentinel._load_tail(5)
         assert [r["ts"] for r in got] == [NOW + (2995 + i) * 60 for i in range(5)]
+
+    def test_tail_lines_reads_only_the_tail_of_the_alerts_log(self, tmp_path):
+        p = tmp_path / "alerts.log"
+        with open(p, "w") as f:
+            for i in range(5000):
+                f.write(f"2026-09-29 00:00:00  k: line {i} {'x' * 30}\n")
+        assert p.stat().st_size > 64 * 1024
+        got = sentinel._tail_lines(p, 3)
+        assert [ln.split("line ")[1].split()[0] for ln in got] == ["4997", "4998", "4999"]
+        assert sentinel._tail_lines(tmp_path / "none.log", 3) == [] and sentinel._tail_lines(p, 0) == []
+        assert "read_text" not in inspect.getsource(sentinel._tail_alerts)
+
+
+class TestRunSampleResilience:
+    """A bad history row or a psutil hiccup in one stage must not abort the
+    sample before ASTATE is persisted: the cooldown of the alert that just
+    fired would be lost (it re-fires every minute) and every streak reset."""
+
+    @pytest.mark.parametrize("stage,holder,name", [
+        ("anticipation", aegis, "analyze"),
+        ("remediation", sentinel, "_remediate"),
+        ("auto-reap", aegis, "reap_leaks"),
+    ])
+    def test_a_failing_stage_never_loses_state_and_is_logged(self, tmp_path, monkeypatch, no_signals, stage, holder, name):
+        notes = _hermetic_sample(monkeypatch, tmp_path, swap_used=7e9)   # > swap_used_gb: the absolute alert fires
+
+        def boom(*a, **k):
+            raise RuntimeError(f"{stage} exploded")
+        monkeypatch.setattr(holder, name, boom)
+
+        sentinel.run_sample()
+        assert notes and notes[0][0] == "AegisForge: high swap"
+        astate = json.loads(sentinel.ASTATE.read_text())
+        assert astate.get("swap")                                    # the cooldown stamp survived
+        assert sentinel._load_tail(1)                                # the sample itself was recorded
+        log = sentinel.ALERTS_LOG.read_text()
+        assert "  swap: " in log
+        assert f"  error: {stage} skipped this sample: RuntimeError('{stage} exploded')" in log
+        n = len(notes)
+        sentinel.run_sample()                                        # next minute: no re-fire
+        assert len(notes) == n
+
+
+class TestSampleCommand:
+    """The scheduled job must point at something runnable. The frozen .app has
+    no venv, no macmon.py, and its sys.executable IS the app -- so a Resume
+    from the app must use the installed launcher or refuse, never register a
+    job that fails every minute while reporting success."""
+
+    def test_checkout_uses_its_own_venv(self, tmp_path, monkeypatch):
+        venv_py, script = tmp_path / "python", tmp_path / "macmon.py"
+        venv_py.write_text("")
+        script.write_text("")
+        monkeypatch.setattr(sentinel, "VENV_PY", venv_py)
+        monkeypatch.setattr(sentinel, "MACMON_PY", script)
+        assert sentinel._sample_cmd() == [str(venv_py), str(script), "sentinel", "--sample"]
+
+    def test_installed_launcher_when_the_venv_is_absent(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sentinel, "VENV_PY", tmp_path / "missing")
+        monkeypatch.setattr(sentinel, "MACMON_PY", tmp_path / "macmon.py")
+        monkeypatch.setattr(sentinel, "find_macmon", lambda: "/usr/local/bin/macmon")
+        assert sentinel._sample_cmd() == ["/usr/local/bin/macmon", "sentinel", "--sample"]
+
+    def test_dev_interpreter_fallback_is_never_the_frozen_app(self, tmp_path, monkeypatch):
+        script = tmp_path / "macmon.py"
+        script.write_text("")
+        monkeypatch.setattr(sentinel, "VENV_PY", tmp_path / "missing")
+        monkeypatch.setattr(sentinel, "MACMON_PY", script)
+        monkeypatch.setattr(sentinel, "find_macmon", lambda: None)
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        assert sentinel._sample_cmd() == [sys.executable, str(script), "sentinel", "--sample"]
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        assert sentinel._sample_cmd() == []
+
+    def test_frozen_app_without_a_launcher_refuses_to_register_a_dead_job(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sentinel, "VENV_PY", tmp_path / "missing")
+        monkeypatch.setattr(sentinel, "MACMON_PY", tmp_path / "missing.py")
+        monkeypatch.setattr(sentinel, "find_macmon", lambda: None)
+
+        def boom(*a, **k):
+            raise AssertionError("the scheduler was touched with nothing runnable")
+        monkeypatch.setattr(sentinel.subprocess, "run", boom)
+        ok, note = sentinel._schedule_install()
+        assert ok is False and "macmon sentinel --resume" in note
+
+    def test_find_macmon_probes_path_then_the_well_known_homes(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sentinel.shutil, "which", lambda name: None)
+        monkeypatch.setattr(sentinel, "_MACMON_CANDIDATES", (str(tmp_path / "nope"), str(tmp_path / "macmon")))
+        assert sentinel.find_macmon() is None
+        launcher = tmp_path / "macmon"
+        launcher.write_text("#!/bin/sh\n")
+        launcher.chmod(0o755)
+        assert sentinel.find_macmon() == str(launcher)
+        monkeypatch.setattr(sentinel.shutil, "which", lambda name: "/on/path/macmon")
+        assert sentinel.find_macmon() == "/on/path/macmon"
 
 
 # ── Branding ─────────────────────────────────────────────────────────────

@@ -509,8 +509,9 @@ AegisForge can take is reaping leaked orphans, and it is **opt-in**
   `/usr/libexec`, `/usr/sbin`, and your apps under `/Applications` (except a
   browser binary running `--headless`, which is an automation instance);
 - it has been idle (< 1% CPU, itself and its descendants) for `reap_idle_samples`
-  samples, holds no ESTABLISHED TCP connection (unknown => skip), and is still
-  under PID 1 at signal time.
+  samples, holds no live socket -- no ESTABLISHED connection, and for node/python
+  no LISTEN or bound unix socket either, since an idle backgrounded dev server is
+  still in service (unknown => skip) -- and is still under PID 1 at signal time.
 
 Then, and only then, it gets **SIGTERM** (never SIGKILL). A process with a live
 parent is never signalled, whatever the swarm looks like: the swarm detector

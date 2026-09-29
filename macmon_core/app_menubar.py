@@ -8,6 +8,14 @@ the 60s sampling + notify-only detection. This app READS what the sampler wrote
 on those rows, and shows a glanceable status icon + a dropdown. Destructive
 actions are explicit menu clicks only; nothing here ever auto-kills a workload.
 
+Actions reach the engine two ways. Frozen (the PyInstaller .app) there is no
+interpreter to spawn -- ``sys.executable`` IS the app and ``macmon.py`` is not
+in the bundle -- so they call the engine's functions in-process on a worker
+thread. In dev mode they run the installed ``macmon`` launcher (else this
+interpreter on the repo's ``macmon.py``) as a subprocess. Either way the
+outcome is reported by notification: a menu-bar app has no console, so nothing
+here may fail silently.
+
 Optional dependency: ``rumps`` (a thin wrapper over pyobjc/NSStatusBar). It is
 NOT a core runtime dep of the macmon CLI -- install it with ``pip install
 -e ".[app]"`` or via ``build_aegisforge.sh`` which freezes this into
@@ -16,11 +24,14 @@ NOT a core runtime dep of the macmon CLI -- install it with ``pip install
 """
 from __future__ import annotations
 
+import shlex
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+
+from rich.text import Text
 
 try:  # the menu-bar layer is optional; the CLI never imports rumps
     import rumps
@@ -28,12 +39,15 @@ except ImportError:  # pragma: no cover - exercised via the packaged app only
     rumps = None
 
 from . import aegis, sentinel
+from .utils import _applescript_escape, console
 
 REFRESH_S = 30                       # menu refresh cadence (the sampler is 60s)
+STALE_S = 180                        # a sample older than this is flagged STALE
 REPO = Path(__file__).resolve().parent.parent
 # Menu-bar template glyph (monochrome, tinted by macOS). Rendered by
 # build_aegisforge.sh from the brand mono mark; falls back to a text title.
 MENUBAR_ICON = REPO / "assets" / "aegisforge-menubar.png"
+LIVE_ANCHOR = "Open live dashboard"  # the live status block sits above this item
 
 # Worst-first ordering so the status icon reflects the most severe finding.
 _SEV_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0, "ok": -1}
@@ -44,36 +58,50 @@ _SEV_MARK = {"critical": "◉", "high": "◉", "medium": "▲",
 
 
 def _cfg() -> dict:
-    """Sentinel config (defaults + the user's sentinel.conf overlay if any)."""
-    cfg = dict(sentinel.DEFAULTS)
-    try:
-        conf = sentinel.MACMON_DIR / "sentinel.conf"
-        if conf.exists():
-            import tomllib
-            with open(conf, "rb") as fh:
-                cfg.update(tomllib.load(fh) or {})
-    except Exception:
-        pass
-    return cfg
+    """Sentinel config: DEFAULTS + the user's sentinel.conf overlay. The file is
+    JSON (written by ``sentinel._write_conf``), so it is read with the
+    sentinel's own loader -- a TOML parse of it fails and silently yields the
+    defaults, i.e. the app would ignore every threshold the owner set."""
+    return sentinel._conf()
 
 
 def _finding_severity(f) -> str:
-    return (getattr(f, "severity", None) or getattr(f, "sev", None) or "info").lower()
+    """``aegis.Finding`` carries ``.level``; the older ``.severity``/``.sev``
+    spellings are accepted too so a foreign finding still ranks."""
+    sev = getattr(f, "level", None) or getattr(f, "severity", None) or getattr(f, "sev", None) or "info"
+    return str(sev).lower()
 
 
 def _finding_text(f) -> str:
     return getattr(f, "msg", None) or getattr(f, "what", None) or str(f)
 
 
+def sample_age(latest: dict, now: float):
+    """Seconds since the latest sample; None when there is none / no timestamp."""
+    ts = latest.get("ts") if latest else None
+    return max(0.0, now - ts) if isinstance(ts, (int, float)) else None
+
+
+def age_text(age_s) -> str:
+    """'sample 3m ago', flagged STALE past STALE_S: the sampler is a 60s job,
+    so a stale row means it is paused, wedged or uninstalled -- and every
+    figure under it is old news, which the dropdown must say."""
+    if age_s is None:
+        return "sample: none yet"
+    ago = f"{age_s:.0f}s ago" if age_s < 120 else f"{age_s / 60:.0f}m ago"
+    return f"sample {ago}" + (" / STALE" if age_s > STALE_S else "")
+
+
 def gather() -> dict:
     """Read the sampler's output and derive the current picture. Never raises:
     on any error it returns a safe 'unknown' snapshot so the menu still renders."""
-    out = {"vitals": {}, "findings": [], "alerts": [], "worst": "ok", "error": None}
+    out = {"vitals": {}, "findings": [], "alerts": [], "worst": "ok", "age_s": None, "error": None}
     try:
         rows = sentinel._load_tail(16) or []
         now = time.time()
         cfg = _cfg()
         latest = rows[-1] if rows else {}
+        out["age_s"] = sample_age(latest, now)
         out["vitals"] = {
             "cpu": latest.get("cpu"),
             "ram": latest.get("ram"),
@@ -112,22 +140,23 @@ def worst_severity(findings) -> str:
 
 
 def title_for(vitals: dict, worst: str) -> str:
-    """Menu-bar title: quiet when healthy, surfaces the pressure when not."""
+    """Menu-bar title: quiet when healthy, surfaces the pressure when not. The
+    mark never depends on a swap figure being present -- a critical load
+    finding on a row without swap must still mark the icon."""
     mark = _SEV_MARK.get(worst, "")
     swap = vitals.get("swap_gb")
-    if worst in ("critical", "high") and swap is not None:
-        return f"{mark} {swap:.0f}G".strip()
-    if worst in ("medium", "low") and swap is not None:
-        return f"{mark}".strip()
+    if worst in ("critical", "high"):
+        return f"{mark} {swap:.0f}G".strip() if isinstance(swap, (int, float)) else mark
+    if worst in ("medium", "low"):
+        return mark
     return ""  # healthy -> icon only
 
 
 def _recent_alerts(n: int) -> list[str]:
+    """The last n alert lines, tail-read: the log grows for months and this
+    runs on the main thread every tick, so it must not read the whole file."""
     try:
-        if not sentinel.ALERTS_LOG.exists():
-            return []
-        lines = sentinel.ALERTS_LOG.read_text(errors="replace").splitlines()
-        return [ln.strip() for ln in lines[-n:] if ln.strip()]
+        return [ln.strip() for ln in sentinel._tail_lines(sentinel.ALERTS_LOG, n) if ln.strip()]
     except Exception:
         return []
 
@@ -135,7 +164,7 @@ def _recent_alerts(n: int) -> list[str]:
 def menu_lines(snap: dict) -> list[str]:
     """The dropdown body as plain strings (also the unit-tested contract)."""
     v = snap.get("vitals", {})
-    lines = []
+    lines = [age_text(snap.get("age_s"))]
 
     def _fmt(label, val, unit=""):
         return f"{label}: {val}{unit}" if val is not None else f"{label}: --"
@@ -167,35 +196,131 @@ def menu_lines(snap: dict) -> list[str]:
 
 # ── actions (explicit clicks only; never auto-invoked) ───────────────────
 
-def open_dashboard(_=None):
-    """Open the live TUI dashboard in a Terminal window."""
-    script = (f'tell application "Terminal" to do script '
-              f'"cd {REPO} && python3 macmon.py dashboard"')
+def _notify(title: str, msg: str):
+    """Tell the owner. A menu-bar app has no console, so every outcome a CLI
+    user would read on stdout goes out as a notification: rumps' centre first,
+    the sentinel's notifier (branded applet / osascript) as fallback. Never raises."""
     try:
-        subprocess.Popen(["osascript", "-e", 'tell application "Terminal" to activate',
-                          "-e", script])
+        if rumps is not None:
+            rumps.notification(title, "", msg)
+            return
+    except Exception:
+        pass
+    try:
+        sentinel._notify(title, msg)
     except Exception:
         pass
 
 
+def _last_line(text: str) -> str:
+    """The last non-empty line of console output, ANSI stripped -- the one-line
+    outcome a CLI user would have read last ("Purge failed: sudo needs a password")."""
+    lines = [ln.strip() for ln in Text.from_ansi(text or "").plain.splitlines() if ln.strip()]
+    return lines[-1][:200] if lines else "done"
+
+
+def _in_process(args: list[str]):
+    """The in-process form of ``macmon <args>`` for the frozen app: the bundle
+    has no interpreter to spawn (``sys.executable`` IS the app -- spawning it
+    just opened a second AegisForge) and no ``macmon.py``, so each action calls
+    the engine function the CLI subcommand would. None for anything else."""
+    from . import cleaner, processes   # lazy: keep the menu-bar import light
+    table = {
+        ("clean", "--all", "-y"): lambda: cleaner.run_cleaner(all_clean=True, force_yes=True),
+        ("purge",): processes.purge_ram,
+        ("sentinel", "--pause"): sentinel.pause,
+        ("sentinel", "--resume"): sentinel.resume,
+    }
+    return table.get(tuple(args))
+
+
+def _cli_command(args: list[str]):
+    """argv for ``macmon <args>`` outside the frozen app: the installed launcher
+    when there is one, else this interpreter on the repo's macmon.py. None when
+    neither exists (the caller notifies -- never silent)."""
+    exe = sentinel.find_macmon()
+    if exe:
+        return [exe, *args]
+    script = REPO / "macmon.py"
+    if script.exists():
+        return [sys.executable, str(script), *args]
+    return None
+
+
+def _run_action(args: list[str]):
+    """The worker body (synchronous; unit-tested directly). Frozen: in-process.
+    Dev: a subprocess. Either way the outcome is reported, never swallowed."""
+    label = "macmon " + " ".join(args)
+    try:
+        if getattr(sys, "frozen", False):
+            fn = _in_process(args)
+            if fn is None:
+                _notify(f"{aegis.BRAND}: action unavailable", f"{label} has no in-app form.")
+                return
+            with console.capture() as cap:
+                fn()
+            _notify(aegis.BRAND, f"{label}: {_last_line(cap.get())}")
+            return
+        cmd = _cli_command(args)
+        if cmd is None:
+            _notify(f"{aegis.BRAND}: macmon not found",
+                    f"Install the CLI (install.sh or pip install -e .) to run {label}.")
+            return
+        r = subprocess.run(cmd, cwd=str(REPO), capture_output=True, text=True, timeout=600)
+        if r.returncode != 0:
+            _notify(f"{aegis.BRAND}: {label} failed", _last_line(r.stderr or r.stdout) or f"exit {r.returncode}")
+    except Exception as e:
+        _notify(f"{aegis.BRAND}: {label} failed", str(e)[:200] or type(e).__name__)
+
+
 def _run_cli(args: list[str]):
     """Run a macmon subcommand in the background (dev + frozen safe)."""
-    def _worker():
-        try:
-            cmd = [sys.executable, str(REPO / "macmon.py"), *args]
-            subprocess.run(cmd, cwd=str(REPO), timeout=600)
-        except Exception:
-            pass
-    threading.Thread(target=_worker, daemon=True).start()
+    threading.Thread(target=_run_action, args=(list(args),), daemon=True).start()
+
+
+def _confirm(title: str, message: str, ok: str = "OK") -> bool:
+    """Explicit confirmation for a destructive action (a rumps alert with a
+    Cancel button). Without rumps there is no dialog to ask in, so: no."""
+    if rumps is None:
+        return False
+    try:
+        return rumps.alert(title, message, ok=ok, cancel=True) == 1
+    except Exception:
+        return False
+
+
+def open_dashboard(_=None):
+    """Open the live TUI dashboard in a Terminal window."""
+    exe = sentinel.find_macmon()
+    if exe:
+        shell = f"{shlex.quote(exe)} dashboard"
+    elif not getattr(sys, "frozen", False) and (REPO / "macmon.py").exists():
+        shell = f"cd {shlex.quote(str(REPO))} && {shlex.quote(sys.executable)} macmon.py dashboard"
+    else:
+        _notify(f"{aegis.BRAND}: macmon not found",
+                "Install the CLI (install.sh or pip install -e .) to open the dashboard.")
+        return
+    script = f'tell application "Terminal" to do script "{_applescript_escape(shell)}"'
+    try:
+        subprocess.Popen(["osascript", "-e", 'tell application "Terminal" to activate',
+                          "-e", script])
+    except Exception as e:
+        _notify(f"{aegis.BRAND}: dashboard failed", str(e)[:200] or type(e).__name__)
 
 
 def clean_caches(_=None):
+    # Destructive => explicit: this dialog is the confirmation that `-y` skips.
+    if not _confirm("Clean caches?",
+                    "Runs 'macmon clean --all': system, browser, app and user caches go "
+                    "to the Trash (nothing is deleted permanently).", ok="Clean"):
+        return
     _run_cli(["clean", "--all", "-y"])
 
 
 def purge_ram(_=None):
-    # macmon purge shells out to `sudo purge`; macOS prompts for the password
-    # in a GUI dialog when launched from the .app. Never silent, never forced.
+    # `macmon purge` runs `sudo -n purge`: it never prompts (there is no GUI
+    # password dialog for it) and fails fast unless `macmon sentinel
+    # --setup-purge` installed the sudoers rule. The outcome is notified.
     _run_cli(["purge"])
 
 
@@ -213,6 +338,32 @@ def _icon_or_none():
     return str(MENUBAR_ICON) if MENUBAR_ICON.exists() else None
 
 
+def render_live(menu, snap: dict, live_keys) -> list:
+    """Replace the live status block at the top of `menu` with `snap`'s lines.
+
+    rumps keys a MenuItem by its title at insert time and a separator by a
+    generated 'SeparatorMenuItem_<n>' name, so no prefix filter can find what
+    the previous tick inserted: this deletes exactly the keys it inserted last
+    time (`live_keys`) and returns this tick's keys for the next one. Each item
+    gets a unique key ('live:<i>') and only THEN its display title -- two
+    identical lines would otherwise collide (rumps then holds an NSMenuItem
+    its dict no longer tracks) and the key would show as the title."""
+    for key in live_keys:
+        if key in menu:
+            del menu[key]
+    keys = []
+    for i, ln in enumerate(menu_lines(snap)):
+        before = set(menu.keys())
+        if ln == "--":
+            menu.insert_before(LIVE_ANCHOR, rumps.separator)
+        else:
+            item = rumps.MenuItem(f"live:{i}")
+            menu.insert_before(LIVE_ANCHOR, item)
+            item.title = ln[:120]
+        keys.extend(set(menu.keys()) - before)
+    return keys
+
+
 if rumps is not None:  # pragma: no cover - requires a GUI session
 
     class AegisForgeApp(rumps.App):
@@ -223,7 +374,7 @@ if rumps is not None:  # pragma: no cover - requires a GUI session
                 icon=icon, template=True, quit_button=None,
             )
             self.menu = [
-                rumps.MenuItem("Open live dashboard", callback=open_dashboard),
+                rumps.MenuItem(LIVE_ANCHOR, callback=open_dashboard),
                 None,
                 rumps.MenuItem("Clean caches", callback=clean_caches),
                 rumps.MenuItem("Purge RAM (sudo)", callback=purge_ram),
@@ -233,21 +384,14 @@ if rumps is not None:  # pragma: no cover - requires a GUI session
                 None,
                 rumps.MenuItem(f"Quit {aegis.BRAND}", callback=rumps.quit_application),
             ]
+            self._live_keys: list = []
             self._refresh(None)
 
         @rumps.timer(REFRESH_S)
         def _refresh(self, _):
             snap = gather()
             self.title = title_for(snap.get("vitals", {}), snap.get("worst", "ok"))
-            # Rebuild the live status section at the top of the menu.
-            for key in list(self.menu.keys()):
-                if key.startswith("─") or key.startswith("live:"):
-                    del self.menu[key]
-            live = menu_lines(snap)
-            for i, ln in enumerate(live):
-                item = None if ln == "--" else rumps.MenuItem(f"live:{i} {ln}"[:120])
-                self.menu.insert_before("Open live dashboard",
-                                        item or rumps.separator)
+            self._live_keys = render_live(self.menu, snap, self._live_keys)
 
 
 def main():
