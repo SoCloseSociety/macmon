@@ -1,5 +1,10 @@
 """MACMON-SENTINEL -- ultra-light always-on monitor + tactical console.
 
+Presented to the owner as AegisForge ("fleet health, forged"): macmon is the
+engine, AegisForge is the experience -- the banner, the notifications, the
+theme, and the proactive layer in `aegis.py` that turns the sampler from a
+threshold alarm into an anticipatory one (trend/slope over the history).
+
 Design goals: precise, surgical, near-zero cost.
   - Collector: a single-shot sampler (macmon sentinel --sample) fired every 60s
     by a LaunchAgent. It measures in ~0.5s, appends one compact JSON line, fires
@@ -30,6 +35,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from . import aegis
+from .aegis import AEGIS_THEME, BRAND, C, ENGINE, LEVEL_STYLE, TAGLINE
 from .utils import MACMON_DIR, console
 from .platform_compat import IS_MAC, IS_WINDOWS, OS_NAME, load_average, notify as _os_notify, require_os
 
@@ -47,17 +54,25 @@ MONITOR_LABEL = "co.soclose.macmon.monitor"
 WEEKLY_LABEL = "co.soclose.macmon.weekly"
 MAX_BYTES = 5 * 1024 * 1024
 
-# Notifier applet -- lets macOS notifications carry the macmon icon (a bare
-# osascript notification always shows the generic Script Editor icon).
+# Notifier applet -- lets macOS notifications carry the AegisForge icon (a bare
+# osascript notification always shows the generic Script Editor icon). The
+# bundle path + identifier are kept from the macmon days on purpose: macOS keys
+# the notification permission on the identifier, so rebranding the name and
+# icon never re-triggers the "allow notifications?" prompt.
 NOTIFIER_APP = MACMON_DIR / "MacmonSentinel.app"
 NOTIFY_PAYLOAD = MACMON_DIR / ".notify_payload"
-ICNS_SRC = REPO_DIR / "assets/macmon.icns"
+AEGIS_ICNS = REPO_DIR / "assets/aegisforge.icns"   # branded icon (preferred)
+ICNS_SRC = REPO_DIR / "assets/macmon.icns"          # engine icon (fallback)
+NOTIFIER_BRAND = "aegisforge-1"                     # bump to force a rebuild
 
-GREEN, AMBER, RED, DIM = "bright_green", "yellow", "bright_red", "grey50"
+# AegisForge palette (see aegis.C). The legacy names stay so every gauge,
+# sparkline and verdict in this module picks the branded tokens up unchanged.
+GREEN, AMBER, RED, DIM = C["ok"], C["amber"], C["critical"], C["dim"]
+MINT, EMBER, SKY, TEXT = C["mint"], C["ember"], C["sky"], C["text"]
 
 # Notification title prefix. Platform-neutral: macmon also runs on Windows/Linux,
 # where a toast titled "Mac: ..." would make no sense.
-ALERT_TITLE = "macmon"
+ALERT_TITLE = BRAND
 
 DEFAULTS = {
     "swap_used_gb": 6.0,
@@ -77,6 +92,29 @@ DEFAULTS = {
     "ram_critical": 90.0,     # remediation triggers above this RAM% ...
     "swap_critical_gb": 8.0,  # ... AND above this swap usage
     "idle_samples": 10,       # a session must be idle this many samples (~10 min) first
+    # ── AegisForge proactive layer (detection + alerting: ON, notify-only) ──
+    "trend_window": 10,       # samples used for slope / ETA (~10 min)
+    "swap_trend_min_gb": 3.0, # swap trend alert: swap already at least this ...
+    "swap_slope_gb_min": 0.1, # ... climbing at least this fast (GB per minute) ...
+    "swap_eta_min": 20,       # ... and due to hit swap_critical_gb within this many minutes
+    "ram_trend_min": 75.0,    # memory trend alert: RAM% floor ...
+    "ram_slope_pct_min": 1.0, # ... slope floor (%/min) ...
+    "ram_eta_min": 15,        # ... ETA to ram_critical (minutes)
+    "load_factor": 2.0,       # load catastrophe: load1 > cores * factor ...
+    "load_sustain": 3,        # ... for this many consecutive samples
+    "swarm_window": 5,        # growth is measured against the sample this many samples back
+    "swarm_headless_min": 8,  # headless-browser swarm: at least this many ...
+    "swarm_headless_growth": 8,  # ... and grew by this many in the window ...
+    "swarm_headless_max": 40, # ... or simply this many, whatever the trend
+    "swarm_floor": 8,         # generic swarm: names with fewer instances are not even tracked
+    "swarm_min": 24,          # generic swarm: at least this many instances ...
+    "swarm_growth": 12,       # ... and grew by this many in the window
+    "orphan_alert_min": 3,    # alert when this many PROVEN leaks are present
+    # ── Auto-reap (opt-in): SIGTERM proven-leaked orphans -- see aegis.py invariants ──
+    "auto_reap_orphans": False,  # LEVEL 2 (opt-in): reap ppid==1 + parent-proven-dead leaks
+    "reap_idle_samples": 5,   # a leak must be idle (<1% CPU) this many samples (~5 min) first
+    "reap_families": ["headless", "node", "python"],  # which leak families may be reaped
+    "reap_max": 40,           # at most this many per cycle
 }
 
 
@@ -115,10 +153,29 @@ on reopen
 end reopen'''
 
 
+def _icon_source():
+    """The notifier icon: AegisForge when shipped, the macmon icon as fallback."""
+    if AEGIS_ICNS.exists():
+        return AEGIS_ICNS
+    if ICNS_SRC.exists():
+        return ICNS_SRC
+    return None
+
+
+def _notifier_branded() -> bool:
+    """Was the installed notifier built by THIS brand version? (A stale
+    macmon-era applet keeps working, it just shows the old name and icon.)"""
+    try:
+        return (NOTIFIER_APP / "Contents/Resources/.brand").read_text().strip() == NOTIFIER_BRAND
+    except OSError:
+        return False
+
+
 def _build_notifier():
-    """Compile a tiny AppleScript applet carrying the macmon icon so that
-    notifications show the project icon instead of the Script Editor icon."""
-    if not ICNS_SRC.exists():
+    """Compile a tiny AppleScript applet carrying the AegisForge icon so that
+    notifications show the brand icon instead of the Script Editor icon."""
+    icon = _icon_source()
+    if icon is None:
         return False
     try:
         import shutil
@@ -132,7 +189,7 @@ def _build_notifier():
         os.unlink(src)
         if r.returncode != 0:
             return False
-        shutil.copy(ICNS_SRC, NOTIFIER_APP / "Contents/Resources/applet.icns")
+        shutil.copy(icon, NOTIFIER_APP / "Contents/Resources/applet.icns")
         plist = str(NOTIFIER_APP / "Contents/Info.plist")
 
         def _plist_set(key, value, typ="string"):
@@ -141,10 +198,12 @@ def _build_notifier():
             if r.returncode != 0:
                 subprocess.run(["/usr/libexec/PlistBuddy", "-c", f"Add :{key} {typ} {value}", plist], capture_output=True)
 
-        _plist_set("CFBundleName", "macmon")
+        _plist_set("CFBundleName", BRAND)
+        _plist_set("CFBundleDisplayName", BRAND)
         _plist_set("CFBundleIconFile", "applet")
-        _plist_set("CFBundleIdentifier", "com.macmon.app")  # canonical macmon identity
+        _plist_set("CFBundleIdentifier", "com.macmon.app")  # kept: notification permission is keyed on it
         _plist_set("LSUIElement", "true", "bool")  # faceless helper, no Dock icon
+        (NOTIFIER_APP / "Contents/Resources/.brand").write_text(NOTIFIER_BRAND)
         NOTIFIER_APP.touch()
         # Register so the icon/identity resolve immediately (no icon-cache lag)
         lsreg = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
@@ -477,6 +536,11 @@ def run_sample():
     oll = _ollama_status()
     vmst = _vm_status()
 
+    # ── AegisForge observation: one process-table pass (families, lineage,
+    # proven leaks). Needs the persisted state, so it is read here.
+    astate = _read_json(ASTATE, {})
+    forge = aegis.observe(astate, cfg)
+
     rec = {
         "ts": now, "cpu": round(cpu, 1), "ram": round(vm.percent, 1),
         "swap_gb": round(sw.used / 1e9, 2), "load1": round(load_average()[0], 2),
@@ -485,11 +549,11 @@ def run_sample():
         "top": [tname, round(tcpu, 1), trss], "rtt": rtt,
         "ollama_gb": oll["gb"], "vm_gb": vmst["gb"],
     }
+    rec.update(forge["record"])
     _rotate()
     with open(METRICS, "a") as f:
         f.write(json.dumps(rec) + "\n")
 
-    astate = _read_json(ASTATE, {})
     fired = []
     fleet_total = fleet["claude"][0] + fleet["codex"][0]
     vm_owner = f" ({vmst['owner']})" if vmst.get("owner") else ""
@@ -520,10 +584,20 @@ def run_sample():
             _notify(title, msg)
             fired.append((key, msg))
 
+    # ── AegisForge anticipation: trend/slope over the recent history. Notify-only.
+    window = aegis._int(cfg, "trend_window", 10, lo=3) + 2
+    fired.extend(_fire_findings(aegis.analyze(_load_tail(window), cfg, now), astate, now))
+
     # ── Auto-remediation (safe escalation on memory pressure) ──
     sessions = _claude_sessions()
     streaks = _update_idle_streaks(sessions, astate)
     for key, msg in _remediate(vm, sw, cfg, astate, now, sessions, streaks, oll):
+        fired.append((key, msg))
+
+    # ── Auto-reap (opt-in, default OFF): only lineage-proven leaks under PID 1,
+    # idle, with no live connection -- the invariants live in aegis.reap_leaks.
+    for key, msg in aegis.reap_leaks(forge["leaks"], cfg, astate, now):
+        _notify(f"{ALERT_TITLE} auto", msg)
         fired.append((key, msg))
 
     try:
@@ -534,6 +608,41 @@ def run_sample():
         with open(ALERTS_LOG, "a") as f:
             for key, msg in fired:
                 f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}  {key}: {msg}\n")
+
+
+def _fire_findings(findings, astate: dict, now: int) -> list:
+    """Notify each proactive finding once per cooldown (state in astate)."""
+    fired = []
+    for f in findings:
+        if now - astate.get(f.key, 0) >= f.cooldown:
+            astate[f.key] = now
+            _notify(f"{ALERT_TITLE}: {f.title}", f.msg)
+            fired.append((f.key, f.msg))
+    return fired
+
+
+def _load_tail(n: int = 16) -> list:
+    """The last n samples, reading only the tail of metrics.jsonl (the sampler
+    must not re-read a 5 MB file every minute)."""
+    if not METRICS.exists():
+        return []
+    try:
+        with open(METRICS, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - 256 * 1024))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return []
+    if size > 256 * 1024:
+        lines = lines[1:]  # the first line is almost certainly cut mid-record
+    rows = []
+    for ln in lines[-n:]:
+        try:
+            rows.append(json.loads(ln))
+        except Exception:
+            pass
+    return rows
 
 
 # ── Tactical console ─────────────────────────────────────────────────────
@@ -583,7 +692,10 @@ def _stat(label, value, pct, warn=70, crit=88):
     return t
 
 
-def _verdict(latest):
+_FLAG = {"swap_trend": "SWAP↑", "ram_trend": "RAM↑", "load": "LOAD", "leaks": "LEAKS", "swarm": "SWARM"}
+
+
+def _verdict(latest, findings=()):
     if not latest:
         return Text("NO DATA -- sentinel not yet reporting", style=RED)
     flags = []
@@ -595,8 +707,15 @@ def _verdict(latest):
     if latest["disk_free_gb"] < 15: flags.append(("DISK", RED))
     fleet = latest["claude"][0] + latest["codex"][0]
     if fleet > 12: flags.append((f"AI:{fleet}", AMBER))
+    seen = set()
+    for f in findings:  # anticipatory flags (trajectory, not just level)
+        base = f.key.split(":")[0]
+        label = _FLAG.get(base, base.upper())
+        if label not in seen:
+            seen.add(label)
+            flags.append((label, LEVEL_STYLE.get(f.level, AMBER)))
     if not flags:
-        return Text("● OPERATIONAL -- all systems nominal", style=f"bold {GREEN}")
+        return Text("● OPERATIONAL -- all systems nominal", style=f"bold {MINT}")
     t = Text("● ALERT -- ", style=f"bold {RED}")
     for i, (f, col) in enumerate(flags):
         if i:
@@ -605,12 +724,66 @@ def _verdict(latest):
     return t
 
 
+def _banner(extra: str = "") -> str:
+    tail = f" | {extra}" if extra else ""
+    return f"[bold {MINT}]{BRAND.upper()}[/]  [{DIM}]{TAGLINE} | engine {ENGINE} sentinel{tail}[/]"
+
+
+def _forge_panel(rows, cfg, findings, now=None):
+    """The anticipation readout: where each vital is HEADING, not just where it
+    is -- slope, ETA to the critical line, sustained load, swarms and leaks."""
+    t = aegis.trends(rows, cfg, now or time.time())
+    if not t:
+        return None
+    fired = {f.key.split(":")[0] for f in findings}
+    g = Table.grid(padding=(0, 2))
+
+    def row(label, value, note, level):
+        g.add_row(Text(label, style=f"bold {TEXT}"), Text(value, style=LEVEL_STYLE.get(level, DIM)), Text(note, style=DIM))
+
+    def heading(slope, eta, crit, unit):
+        if slope > 0 and eta is not None:
+            return f"past the {crit:.0f}{unit} critical line" if eta <= 0 else f"-> {crit:.0f}{unit} in ~{max(1, round(eta))} min"
+        return "stable" if abs(slope) < 1e-9 else "falling"
+
+    s = t["swap"]
+    row("SWAP", f"{s['gb']:.1f} GB  {s['slope']:+.2f} GB/min", heading(s["slope"], s["eta"], s["crit"], " GB"),
+        "high" if "swap_trend" in fired else "medium" if s["slope"] > 0.05 and s["gb"] >= 1 else "ok")
+    r = t["ram"]
+    row("RAM", f"{r['pct']:.0f}%  {r['slope']:+.1f}%/min", heading(r["slope"], r["eta"], r["crit"], "%"),
+        "high" if "ram_trend" in fired else "medium" if r["slope"] > 0.3 and r["pct"] >= 60 else "ok")
+    ld = t["load"]
+    row("LOAD", f"{ld['load1']:.1f} / {ld['ncpu']} cores  ({ld['ratio']:.1f}x)",
+        f"{ld['sustained']} sample(s) above {ld['factor']:.0f}x" if ld["sustained"] else "nominal",
+        "critical" if "load" in fired else "medium" if ld["ratio"] > 1.0 else "ok")
+    h = t["swarm"].get("headless")
+    w = aegis._int(cfg, "swarm_window", 5, lo=1)
+    if h:
+        row("SWARM", f"headless x{h['count']}  ({h['growth']:+d} / {w} min)", f"<- {t['spawn'] or 'unknown spawner'}",
+            "high" if "swarm" in fired else "low")
+    elif t["names"]:
+        name, v = max(t["names"].items(), key=lambda kv: (kv[1]["growth"], kv[1]["count"]))
+        row("SWARM", f"{name} x{v['count']}  ({v['growth']:+d} / {w} min)", "largest family",
+            "high" if "swarm" in fired else "low")
+    else:
+        row("SWARM", "none", "no runaway family", "ok")
+    lk = t["leaks"]
+    row("LEAKS", f"{lk['leak']} proven  /  {lk['p1']} under PID 1",
+        ("auto-reap ON (opt-in)" if cfg.get("auto_reap_orphans") else "auto-reap OFF -- notify-only")
+        + (f"  {', '.join(lk['names'])}" if lk["names"] else ""),
+        "medium" if "leaks" in fired else "low" if lk["leak"] else "ok")
+    title = f"[bold {EMBER}]FORGE[/] [{DIM}]anticipation -- slope over {t['points']} pts / {t['span_min']:.0f} min[/]"
+    return Panel(g, title=title, border_style=EMBER if fired else DIM, padding=(0, 1), style=f"on {C['surface']}")
+
+
 def _snapshot_panel():
     rows = _load()
+    cfg = _conf()
     latest = rows[-1] if rows else None
     if not latest:
         return Panel(Align.center(Text("Sentinel has no samples yet.\nInstall: macmon sentinel --install", style=AMBER)),
-                     title="[bold]MACMON-SENTINEL[/]", border_style=AMBER)
+                     title=_banner(), border_style=AMBER, style=f"on {C['ground']}")
+    findings = aegis.analyze(rows, cfg, time.time())
 
     cpu_h = [r["cpu"] for r in rows[-48:]]
     ram_h = [r["ram"] for r in rows[-48:]]
@@ -633,15 +806,16 @@ def _snapshot_panel():
     ai_total = fleet[0] + codex[0]
     ai_gb = (fleet[1] + codex[1] + mcp[1]) / 1024
 
+    label = f"bold {TEXT}"
     right = Table.grid(padding=(0, 1))
-    right.add_row(Text("LOAD", style="bold white"), Text(f"{latest['load1']:.2f}", style=GREEN if latest['load1'] < 8 else AMBER))
-    right.add_row(Text("DISK", style="bold white"), Text(f"{latest['disk_free_gb']:.0f}G free", style=GREEN if latest['disk_free_gb'] > 30 else AMBER))
+    right.add_row(Text("LOAD", style=label), Text(f"{latest['load1']:.2f}", style=GREEN if latest['load1'] < 8 else AMBER))
+    right.add_row(Text("DISK", style=label), Text(f"{latest['disk_free_gb']:.0f}G free", style=GREEN if latest['disk_free_gb'] > 30 else AMBER))
     rtt = latest.get("rtt")
     rtt_col = DIM if rtt is None else (GREEN if rtt < 120 else AMBER if rtt < 300 else RED)
-    right.add_row(Text("NET", style="bold white"), Text(f"{rtt:.0f}ms" if rtt else "--", style=rtt_col))
+    right.add_row(Text("NET", style=label), Text(f"{rtt:.0f}ms" if rtt else "--", style=rtt_col))
     if rtt_h:
         right.add_row(Text("rtt", style=DIM), Text(_spark(rtt_h, 20, 500), style=DIM))
-    right.add_row(Text("AI FLEET", style="bold white"), Text(f"{ai_total} ({ai_gb:.1f}G)", style=AMBER if ai_total > 12 else GREEN))
+    right.add_row(Text("AI FLEET", style=label), Text(f"{ai_total} ({ai_gb:.1f}G)", style=AMBER if ai_total > 12 else GREEN))
     right.add_row(Text("  claude", style=DIM), Text(f"{fleet[0]}x {fleet[1]/1024:.1f}G", style=DIM))
     right.add_row(Text("  codex", style=DIM), Text(f"{codex[0]}x {codex[1]/1024:.1f}G", style=DIM))
     right.add_row(Text("  mcp", style=DIM), Text(f"{mcp[0]}x {mcp[1]/1024:.1f}G", style=DIM))
@@ -649,21 +823,28 @@ def _snapshot_panel():
     og = latest.get("ollama_gb", 0) or 0
     vg = latest.get("vm_gb", 0) or 0
     if og:
-        right.add_row(Text("OLLAMA", style="bold white"), Text(f"{og:.1f}G loaded", style=AMBER if og >= 2 else DIM))
+        right.add_row(Text("OLLAMA", style=label), Text(f"{og:.1f}G loaded", style=AMBER if og >= 2 else DIM))
     if vg:
-        right.add_row(Text("VM", style="bold white"), Text(f"{vg:.1f}G", style=AMBER if vg >= 4 else DIM))
+        right.add_row(Text("VM", style=label), Text(f"{vg:.1f}G", style=AMBER if vg >= 4 else DIM))
 
     top = latest["top"]
-    body = Group(
-        Columns([Panel(left, title="VITALS", border_style=DIM, padding=(0, 1)),
-                 Panel(right, title="RECON", border_style=DIM, padding=(0, 1))], equal=True, expand=True),
+    verdict = _verdict(latest, findings)
+    parts = [
+        Columns([Panel(left, title=f"[{DIM}]VITALS[/]", border_style=DIM, padding=(0, 1), style=f"on {C['surface']}"),
+                 Panel(right, title=f"[{DIM}]RECON[/]", border_style=DIM, padding=(0, 1), style=f"on {C['surface']}")],
+                equal=True, expand=True),
+    ]
+    forge = _forge_panel(rows, cfg, findings)
+    if forge is not None:
+        parts.append(forge)
+    parts += [
         Text(f"TOP CPU  {top[0]}  {top[1]:.0f}%  {top[2]}MB", style=DIM),
         Text(""),
-        Align.center(_verdict(latest)),
-    )
-    title = f"[bold]MACMON-SENTINEL[/]  [dim]sample {age_s} | {len(rows)} pts | {datetime.now():%H:%M:%S}[/]"
-    border = RED if "ALERT" in _verdict(latest).plain else GREEN
-    return Panel(body, title=title, border_style=border, padding=(1, 2))
+        Align.center(verdict),
+    ]
+    title = _banner(f"sample {age_s} | {len(rows)} pts | {datetime.now():%H:%M:%S}")
+    border = RED if "ALERT" in verdict.plain else MINT
+    return Panel(Group(*parts), title=title, border_style=border, padding=(1, 2), style=f"on {C['ground']}")
 
 
 def _tail_alerts(n):
@@ -679,8 +860,8 @@ def show_snapshot():
     console.print(_snapshot_panel())
     recent = _tail_alerts(3)
     if recent:
-        console.print(Panel("\n".join(recent), title="[bold]LAST ALERTS[/]", border_style=AMBER, padding=(0, 1)))
-    console.print(Text("  levers: macmon sentinel --watch | --status | --force-purge | --force-clean | --pause/--resume", style=DIM))
+        console.print(Panel("\n".join(recent), title=f"[bold {AMBER}]LAST ALERTS[/]", border_style=AMBER, padding=(0, 1)))
+    console.print(Text("  levers: macmon sentinel --watch | --status | --log | --force-purge | --force-clean | --reap-orphans | --pause/--resume", style=DIM))
 
 
 def show_watch(interval=3):
@@ -726,11 +907,14 @@ def show_status():
     t.add_row("Platform", Text(OS_NAME, style=DIM))
     t.add_row("Sentinel (60s sampler)", Text("ACTIVE" if mon_active else "STOPPED", style=GREEN if mon_active else RED))
     t.add_row("Weekly health agent", Text("ACTIVE" if weekly_active else ("STOPPED" if IS_MAC else "macOS only"), style=GREEN if weekly_active else DIM))
+    t.add_row("AegisForge detectors", Text("ON (notify-only): swap/RAM trend, load, swarm, leaks", style=MINT))
     t.add_row("Auto-unload ollama models", Text("ON" if cfg.get("auto_unload_ollama") else "OFF", style=GREEN if cfg.get("auto_unload_ollama") else DIM))
     t.add_row("Auto-purge (RAM)", Text("ON" if cfg.get("auto_purge") else "OFF (notify-only)", style=GREEN if cfg.get("auto_purge") else DIM))
     t.add_row("Auto-trim idle AI sessions", Text("ON" if cfg.get("auto_trim_fleet") else "OFF", style=AMBER if cfg.get("auto_trim_fleet") else DIM))
+    t.add_row("Auto-reap leaked orphans", Text("ON (proven leaks only)" if cfg.get("auto_reap_orphans") else "OFF (notify-only)",
+                                               style=EMBER if cfg.get("auto_reap_orphans") else DIM))
     t.add_row("Metrics collected", Text(f"{len(_load(100000))} samples", style=DIM))
-    console.print(Panel(t, title="[bold]SENTINEL STATUS[/]", border_style=DIM))
+    console.print(Panel(t, title=_banner("status"), border_style=DIM, style=f"on {C['ground']}"))
 
 
 # ── Manual override + lifecycle ──────────────────────────────────────────
@@ -813,11 +997,12 @@ def _schedule_remove():
 def install():
     ok, note = _schedule_install()
     if ok:
-        console.print(f"[green]MACMON-SENTINEL armed[/] -- sampling every 60s (~0.1% CPU) on {OS_NAME}.")
+        console.print(f"[bold {MINT}]{BRAND} armed[/] [{DIM}]-- {TAGLINE}.[/] {ENGINE} sentinel sampling every 60s (~0.1% CPU) on {OS_NAME}.")
         if IS_MAC:
             icon = _build_notifier()
-            console.print(f"[dim]Notifications: {'branded macmon icon' if icon else 'system icon'}.[/]")
-        console.print("[dim]View anytime: macmon sentinel   |   Live: macmon sentinel --watch[/]")
+            console.print(f"[{DIM}]Notifications: {'branded ' + BRAND + ' icon' if icon else 'system icon'}.[/]")
+        console.print(f"[{DIM}]Proactive detectors ON (notify-only): swap/RAM trend, load, process swarm, leaked orphans.[/]")
+        console.print(f"[{DIM}]View anytime: macmon sentinel   |   Live: macmon sentinel --watch[/]")
         run_sample()
     else:
         console.print(f"[red]Install failed: {note or 'scheduler error'}[/]")
@@ -872,22 +1057,27 @@ def _purge_nopasswd_ready() -> bool:
         return False
 
 
-def enable_auto(aggressive: bool = False):
+def enable_auto(aggressive: bool = False, reap: bool = False):
     """Turn on auto-remediation. Level 1 (purge, macOS) is non-destructive;
-    --aggressive also enables closing idle AI sessions when memory is critical."""
-    _write_conf({"auto_purge": True, "auto_unload_ollama": True, "auto_trim_fleet": bool(aggressive)})
+    --aggressive also enables closing idle AI sessions when memory is critical;
+    --reap also enables reaping lineage-proven leaked orphans (see aegis.py)."""
+    _write_conf({"auto_purge": True, "auto_unload_ollama": True, "auto_trim_fleet": bool(aggressive),
+                 "auto_reap_orphans": bool(reap)})
     purge_line = ("purge inactive RAM on memory pressure -- non-destructive.\n" if IS_MAC
                   else f"(macOS only -- not applicable on {OS_NAME}).\n")
+    label = f"bold {TEXT}"
     console.print(Panel(
         Text.assemble(
-            ("Auto-remediation ENABLED\n\n", f"bold {GREEN}"),
-            ("Level 1a (auto_unload_ollama): ", "bold white"),
+            ("Auto-remediation ENABLED\n\n", f"bold {MINT}"),
+            ("Level 1a (auto_unload_ollama): ", label),
             ("unload IDLE ollama models when RAM is critical -- they reload on demand.\n", DIM),
-            ("Level 1b (auto_purge): ", "bold white"), (purge_line, DIM),
-            ("Level 2 (auto_trim_fleet): ", "bold white"),
+            ("Level 1b (auto_purge): ", label), (purge_line, DIM),
+            ("Level 2 (auto_trim_fleet): ", label),
             (f"{'ON -- closes IDLE AI sessions when RAM is critical (resumable).' if aggressive else 'OFF -- enable with --enable-auto --aggressive.'}\n", DIM),
+            ("Level 2 (auto_reap_orphans): ", label),
+            (f"{'ON -- SIGTERMs dev processes under PID 1 whose parent the sentinel WATCHED die, once idle 5 min with no live connection. Never a live workload.' if reap else 'OFF -- enable with --enable-auto --reap.'}\n", DIM),
         ),
-        title="[bold]macmon sentinel[/]", border_style=GREEN))
+        title=_banner("auto-remediation"), border_style=MINT, style=f"on {C['ground']}"))
     if IS_MAC and not _purge_nopasswd_ready():
         console.print(Text("\nFor unattended purge, allow it without a password (one-time, run this):", style=AMBER))
         console.print(Text("  macmon sentinel --setup-purge", style="bold white"))
@@ -897,8 +1087,8 @@ def enable_auto(aggressive: bool = False):
 
 
 def disable_auto():
-    _write_conf({"auto_purge": False, "auto_trim_fleet": False, "auto_unload_ollama": False})
-    console.print(Text("Auto-remediation DISABLED (notify-only).", style=AMBER))
+    _write_conf({"auto_purge": False, "auto_trim_fleet": False, "auto_unload_ollama": False, "auto_reap_orphans": False})
+    console.print(Text("Auto-remediation DISABLED (notify-only). Proactive detectors keep alerting.", style=AMBER))
 
 
 def manual_unload_ollama():
@@ -999,30 +1189,77 @@ def manual_trim():
                        style=GREEN if closed else DIM))
 
 
+def manual_reap():
+    """Reap lineage-proven leaked orphans now, after listing them and asking.
+
+    Same invariants as auto-reap (PID 1 + a parent the sentinel WATCHED die +
+    never-touch set + no live connection + SIGTERM); the idle-streak wait is
+    replaced by this explicit confirmation. The sampler owns sentinel.state, so
+    nothing is persisted here."""
+    cfg = _conf()
+    astate = _read_json(ASTATE, {})
+    for p in psutil.process_iter(["cpu_percent"]):
+        try:
+            p.cpu_percent(None)
+        except Exception:
+            pass
+    time.sleep(0.5)
+    forge = aegis.observe(astate, cfg)
+    leaks = forge["leaks"]
+    if not leaks:
+        console.print(Text(f"No proven leak. ({len(forge['cands'])} dev process(es) sit under PID 1, but a leak needs a "
+                           f"parent the sentinel watched die -- see 'macmon sweep --orphans' for the heuristic sweep.)", style=DIM))
+        return
+    t = Table(title=f"Leaked orphans ({len(leaks)})", border_style=EMBER)
+    for col, w in (("PID", 7), ("Name", 26), ("Family", 9), ("Proof", 30), ("State", 6)):
+        t.add_column(col, width=w)
+    for L in leaks:
+        t.add_row(str(L["pid"]), L["name"][:26], L["family"], L["proof"][:30], "busy" if L["busy"] else "idle")
+    console.print(t)
+    idle = [L for L in leaks if not L["busy"]]
+    if not idle:
+        console.print(Text("All of them are busy right now -- refusing to touch a working process.", style=AMBER))
+        return
+    if console.input(f"[bold]SIGTERM {len(idle)} idle leaked orphan(s)? [y/N] [/]").strip().lower() != "y":
+        return
+    one_shot = {**cfg, "auto_reap_orphans": True, "reap_idle_samples": 1}
+    astate["leak_streak"] = {str(L["pid"]): 1 for L in idle}
+    astate.pop("_reap", None)
+    done = aegis.reap_leaks(idle, one_shot, astate, time.time())
+    if done:
+        console.print(Text(done[0][1], style=MINT))
+    else:
+        console.print(Text("Nothing reaped (each one was busy, connected, or no longer under PID 1 at signal time).", style=DIM))
+
+
 def test_notify():
-    if not NOTIFIER_APP.exists():
+    if not NOTIFIER_APP.exists() or not _notifier_branded():
         _build_notifier()
-    _notify(ALERT_TITLE, "Test notification -- macmon icon is active.")
-    console.print(Text("Test notification sent (with the macmon icon).", style=GREEN))
+    _notify(ALERT_TITLE, f"{TAGLINE} -- test notification, the {BRAND} icon is active.")
+    console.print(Text(f"Test notification sent (with the {BRAND} icon).", style=MINT))
 
 
 def run_sentinel(sample=False, install_flag=False, uninstall_flag=False, watch=False,
                  status=False, log=False, pause_flag=False, resume_flag=False,
                  force_purge=False, force_clean_flag=False, force_focus=False,
                  test_notify_flag=False, enable_auto_flag=False, disable_auto_flag=False,
-                 aggressive=False, trim=False, unload_ollama=False, setup_purge_flag=False):
+                 aggressive=False, trim=False, unload_ollama=False, setup_purge_flag=False,
+                 reap=False, reap_orphans=False):
+    console.push_theme(AEGIS_THEME)
     if sample:
         run_sample()
     elif test_notify_flag:
         test_notify()
     elif enable_auto_flag:
-        enable_auto(aggressive=aggressive)
+        enable_auto(aggressive=aggressive, reap=reap)
     elif disable_auto_flag:
         disable_auto()
     elif unload_ollama:
         manual_unload_ollama()
     elif setup_purge_flag:
         setup_purge()
+    elif reap_orphans:
+        manual_reap()
     elif trim:
         manual_trim()
     elif install_flag:

@@ -477,8 +477,10 @@ def sentinel(
     trim: bool = typer.Option(False, "--trim", help="Close idle AI sessions now (keeps the configured minimum)"),
     unload_ollama: bool = typer.Option(False, "--unload-ollama", help="Unload idle ollama models now (they reload on demand)"),
     setup_purge: bool = typer.Option(False, "--setup-purge", help="Allow purge without a password so auto-purge runs unattended"),
+    reap: bool = typer.Option(False, "--reap", help="With --enable-auto: also auto-reap PROVEN leaked orphans (PID 1 + parent watched dying)"),
+    reap_orphans: bool = typer.Option(False, "--reap-orphans", help="List proven leaked orphans and reap them now (asks first)"),
 ):
-    """MACMON-SENTINEL: ultra-light monitor + tactical console."""
+    """AegisForge sentinel: proactive monitor + tactical console (engine: macmon)."""
     from macmon_core.sentinel import run_sentinel
     run_sentinel(
         sample=sample, install_flag=install, uninstall_flag=uninstall,
@@ -486,6 +488,7 @@ def sentinel(
         force_purge=force_purge, force_clean_flag=force_clean, force_focus=force_focus,
         test_notify_flag=test_notify, enable_auto_flag=enable_auto, disable_auto_flag=disable_auto,
         aggressive=aggressive, trim=trim, unload_ollama=unload_ollama, setup_purge_flag=setup_purge,
+        reap=reap, reap_orphans=reap_orphans,
     )
 
 
