@@ -202,12 +202,23 @@ class _Handler(BaseHTTPRequestHandler):
         pass  # keep the console quiet
 
 
+class _Server(ThreadingHTTPServer):
+    # ThreadingHTTPServer defaults allow_reuse_address=True. On Windows that makes
+    # SO_REUSEADDR behave like SO_REUSEPORT, so binding an already-LISTENING port
+    # SUCCEEDS instead of raising -- the port-in-use fallback below would then never
+    # trigger and two servers would share 9137. False makes a taken port raise
+    # OSError on every platform, so the fallback is consistent (macOS/Linux already
+    # raise). Cost: a rapid restart while the port is in TIME_WAIT falls back to an
+    # ephemeral port, which is fine -- callers use the returned port, not the literal.
+    allow_reuse_address = False
+
+
 def _bind(port: int) -> ThreadingHTTPServer:
     """Bind 127.0.0.1:port, falling back to a free ephemeral port if taken."""
     try:
-        return ThreadingHTTPServer((_HOST, port), _Handler)
+        return _Server((_HOST, port), _Handler)
     except OSError:
-        return ThreadingHTTPServer((_HOST, 0), _Handler)  # 0 -> OS picks a free port
+        return _Server((_HOST, 0), _Handler)  # 0 -> OS picks a free port
 
 
 def serve(port: int = DEFAULT_PORT) -> tuple[ThreadingHTTPServer, int]:
