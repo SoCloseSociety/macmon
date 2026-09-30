@@ -5,7 +5,7 @@ All notable changes to macmon are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.0] - 2026-09-30
 
 ### Added -- AegisForge.app is a complete multi-section app
 - **Seven sections, one window.** `AegisForge.app` grew from a single read-only status page into a native desktop app (pywebview/WKWebView, served from `assets/webui/`): a sidebar with the ember-shield brand + navigation, a top bar with live vitals chips and a global worst-severity indicator, and a real view per section -- **Overview** (CPU/RAM/swap/load/disk bars + sparklines from the sampler's history, the FORGE anticipation lines, health score ring, recent alerts), **Processes** (search, sort, per-row Kill / Suspend / Resume, protected rows shown as `PROTECTED` with no buttons, Purge RAM), **Clean** (a four-step funnel: Scan -> itemized Review with checkboxes -> Confirm -> Done "freed X"), **Security** (scored scan with pass/warn/fail findings + fix hints, a quarantine funnel), **Docker** (overview stats, containers / images / volumes / disk-usage tabs, a guarded dangling-only prune), **Disk** (top-level usage bars, big-files table with Reveal in Finder), **Sentinel** (sampler ACTIVE/STOPPED with Pause / Resume, FORGE trends, the five detectors, the four opt-in auto-remediation switches -- default OFF, each ON flip confirmed with an acknowledgement -- and the thresholds).
@@ -135,7 +135,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release: a terminal-native macOS system monitor and cleaner -- 30 commands including a live TUI dashboard, process manager, system cleaner, dev garbage collector, security scanner, Docker manager, disk analyzer, duplicate finder, and an autopilot daemon. 100% local, zero telemetry, MIT licensed.
 
-[Unreleased]: https://github.com/SoCloseSociety/macmon/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/SoCloseSociety/macmon/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/SoCloseSociety/macmon/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/SoCloseSociety/macmon/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/SoCloseSociety/macmon/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/SoCloseSociety/macmon/compare/v1.1.0...v1.2.0
