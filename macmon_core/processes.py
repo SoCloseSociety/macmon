@@ -30,9 +30,11 @@ from .utils import (
 
 # ── Process Listing ──────────────────────────────────────────────────────
 
-def list_processes(filter_cat: str = None, sort_by: str = "cpu", tree: bool = False, json_out: bool = False):
-    # First pass primes per-process CPU counters (first cpu_percent always reads 0.0),
-    # second pass after a short delay reads real values
+def collect_processes(filter_cat: str = None, sort_by: str = "cpu") -> list[dict]:
+    """The process table as plain dicts (the data behind ``macmon ps`` and the
+    AegisForge app's Processes view). Two passes: the first primes the
+    per-process CPU counters (the first cpu_percent always reads 0.0), the
+    second after a short delay reads real values."""
     cached = list(psutil.process_iter(["pid", "ppid", "name", "cpu_percent", "memory_info", "status", "create_time", "username"]))
     time.sleep(0.5)
     procs = []
@@ -68,6 +70,11 @@ def list_processes(filter_cat: str = None, sort_by: str = "cpu", tree: bool = Fa
     sort_key = {"cpu": "cpu", "ram": "ram", "name": "name", "runtime": "created"}.get(sort_by, "cpu")
     reverse = sort_by != "name" and sort_by != "runtime"
     procs.sort(key=lambda x: x[sort_key], reverse=reverse)
+    return procs
+
+
+def list_processes(filter_cat: str = None, sort_by: str = "cpu", tree: bool = False, json_out: bool = False):
+    procs = collect_processes(filter_cat, sort_by)
 
     if json_out:
         console.print_json(json.dumps(procs[:50], default=str))

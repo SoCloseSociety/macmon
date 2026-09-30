@@ -519,13 +519,31 @@ names the spawner and leaves stopping it to you.
 
 ### Native macOS app (AegisForge.app)
 
-Prefer a real app window to the terminal? `AegisForge.app` opens a native window
-(pywebview / WKWebView, Dock icon -- the fleet's Sentinel model) showing a
-branded live dashboard: CPU/RAM/swap/load bars, the FORGE anticipation lines,
-recent alerts, and a sample-age badge. It does not sample on its own -- it reads
-what the 60s LaunchAgent sampler wrote (over a loopback-only `127.0.0.1` HTTP
-origin, read-only), so there is no double work and no auto-remediation surprise.
-Build it (only needed for the app; the CLI never depends on it):
+Prefer a real app window to the terminal? `AegisForge.app` is a native desktop
+app (pywebview / WKWebView, Dock icon -- the fleet's Sentinel model) wrapping the
+same engine, with a sidebar of seven sections and a top bar of live vitals plus
+a global worst-severity indicator:
+
+| Section | What it shows | What it can do (each a confirmed funnel) |
+| --- | --- | --- |
+| Overview | CPU / RAM / swap / load / disk bars + sparklines, FORGE anticipation lines, health score, recent alerts | -- |
+| Processes | top processes, search + sort, `PROTECTED` rows | Kill (SIGTERM) / Suspend / Resume per row, Purge RAM |
+| Clean | Scan -> itemized Review (checkboxes, sizes) -> Confirm -> Done "freed X" | Trash-first clean of the ticked categories only |
+| Security | scored scan, pass / warn / fail findings + fix hints | quarantine a process |
+| Docker | overview stats, containers / images / volumes / disk usage | prune dangling images (never `-a`, never volumes) |
+| Disk | top-level usage bars, big files | Reveal in Finder |
+| Sentinel | sampler state, FORGE trends, the detectors, thresholds | Pause / Resume, the four opt-in auto-remediation switches (default OFF) |
+
+Reads come over a loopback-only `127.0.0.1` HTTP origin that is GET-only,
+Host-gated and CSP'd; **actions go through pywebview's `js_api` bridge only**,
+which exists inside the app window and nowhere else -- so a DNS-rebinding page
+can neither read the telemetry nor reach a lever. Every guardrail holds through
+the bridge: protected processes are refused, a guarded one (IDE, agent, LLM,
+container, the fleet ...) needs an explicit acknowledgement, cleaning is
+preview-first and Trash-first, nothing auto-runs. Opened in a plain browser tab
+the page is a read-only dashboard and says so. It does not sample on its own --
+it reads what the 60s LaunchAgent sampler wrote. Build it (only needed for the
+app; the CLI never depends on it):
 
 ```bash
 pip install -e ".[app]"     # pywebview + rumps + pyobjc, app-only
@@ -534,10 +552,10 @@ open dist/AegisForge.app
 ```
 
 It builds like the fleet's Sentinel.app: PyInstaller `--windowed`, the
-ember-shield icon, ad-hoc codesigned, a real windowed app (Dock icon). If
-pywebview is absent it degrades to a menu-bar agent that opens the dashboard in
-the browser. It is a convenience shell -- every safety guarantee above still
-comes from the one engine.
+ember-shield icon, ad-hoc codesigned, a real windowed app (Dock icon); the page
+lives in `assets/webui/` (bundled). If pywebview is absent it degrades to a
+menu-bar agent that opens the dashboard in the browser. It is a convenience
+shell -- every safety guarantee above still comes from the one engine.
 
 ### Sentinel config
 
@@ -586,7 +604,9 @@ macmon_core/
   sentinel.py            MACMON-SENTINEL: 60s sampler, alerts, auto-remediation
   aegis.py               AegisForge layer: theme/brand, trend detectors, lineage-proven leak reaper
   app_menubar.py         AegisForge.app menu-bar face (rumps, optional): reads the sampler's rows, explicit actions only
-  app_webui.py           AegisForge.app window: read-only local status page (127.0.0.1, GET only, pywebview)
+  app_webui.py           AegisForge.app reads: loopback server (127.0.0.1, GET only) + the native window
+  app_api.py             AegisForge.app actions: the pywebview js_api bridge (every guardrail enforced here)
+assets/webui/            the app page (index.html, app.css, app.js, mark.svg) -- no HTML-string sink
   processes.py           Process manager, sweep, ports
   cleaner.py             System cleaner (junk, browsers, apps)
   gc.py                  Dev garbage collector

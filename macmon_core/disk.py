@@ -82,18 +82,9 @@ def _parse_size(size_str: str) -> int:
         raise typer.Exit(code=1)
 
 
-def find_big_files(
-    path: str = "~",
-    min_size: str = "50MB",
-    file_type: str = None,
-    older: int = None,
-    json_out: bool = False,
-):
-    base = Path(path).expanduser()
-    min_bytes = _parse_size(min_size)
-
-    console.print(Panel(f"[bold]macmon bigfiles[/] -- {base} (min: {format_size(min_bytes)})", border_style="cyan"))
-
+def _scan_big_files(base: Path, min_bytes: int, file_type: str = None, older: int = None) -> list[dict]:
+    """The largest files under ``base`` (top 50, biggest first) as dicts --
+    the walk behind ``macmon bigfiles`` and the app's Disk view."""
     now = time.time()
     max_results = 200
 
@@ -103,50 +94,45 @@ def find_big_files(
     heap = []
     seq = 0
 
-    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as progress:
-        task = progress.add_task("Scanning for large files...", total=None)
-
-        for root, dirs, files in os.walk(base):
-            # Skip system directories
-            dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".Spotlight")]
-            for fname in files:
-                fpath = Path(root) / fname
-                if fpath.is_symlink():
-                    continue
-                try:
-                    st = fpath.stat()
-                    if st.st_size < min_bytes:
-                        continue
-
-                    # Filter by type
-                    if file_type and not fpath.suffix.lower().lstrip(".") == file_type.lower().lstrip("."):
-                        continue
-
-                    # Filter by age -- Spotlight refreshes atime, so a file
-                    # only counts as old if BOTH atime and mtime are old
-                    if older:
-                        last_use = max(st.st_atime, st.st_mtime)
-                        if (now - last_use) / 86400 < older:
-                            continue
-
-                    emoji, category = _categorize_file(fpath)
-                    item = (st.st_size, seq, {
-                        "path": str(fpath),
-                        "size": st.st_size,
-                        "atime": st.st_atime,
-                        "mtime": st.st_mtime,
-                        "emoji": emoji,
-                        "category": category,
-                    })
-                    seq += 1
-                    if len(heap) < max_results:
-                        heapq.heappush(heap, item)
-                    else:
-                        heapq.heappushpop(heap, item)
-                except (OSError, PermissionError):
+    for root, dirs, files in os.walk(base):
+        # Skip system directories
+        dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".Spotlight")]
+        for fname in files:
+            fpath = Path(root) / fname
+            if fpath.is_symlink():
+                continue
+            try:
+                st = fpath.stat()
+                if st.st_size < min_bytes:
                     continue
 
-        progress.remove_task(task)
+                # Filter by type
+                if file_type and not fpath.suffix.lower().lstrip(".") == file_type.lower().lstrip("."):
+                    continue
+
+                # Filter by age -- Spotlight refreshes atime, so a file
+                # only counts as old if BOTH atime and mtime are old
+                if older:
+                    last_use = max(st.st_atime, st.st_mtime)
+                    if (now - last_use) / 86400 < older:
+                        continue
+
+                emoji, category = _categorize_file(fpath)
+                item = (st.st_size, seq, {
+                    "path": str(fpath),
+                    "size": st.st_size,
+                    "atime": st.st_atime,
+                    "mtime": st.st_mtime,
+                    "emoji": emoji,
+                    "category": category,
+                })
+                seq += 1
+                if len(heap) < max_results:
+                    heapq.heappush(heap, item)
+                else:
+                    heapq.heappushpop(heap, item)
+            except (OSError, PermissionError):
+                continue
 
     big_files = [item[2] for item in heap]
 
@@ -167,7 +153,25 @@ def find_big_files(
             pass
 
     big_files.sort(key=lambda x: x["size"], reverse=True)
-    big_files = big_files[:50]
+    return big_files[:50]
+
+
+def find_big_files(
+    path: str = "~",
+    min_size: str = "50MB",
+    file_type: str = None,
+    older: int = None,
+    json_out: bool = False,
+):
+    base = Path(path).expanduser()
+    min_bytes = _parse_size(min_size)
+
+    console.print(Panel(f"[bold]macmon bigfiles[/] -- {base} (min: {format_size(min_bytes)})", border_style="cyan"))
+
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as progress:
+        task = progress.add_task("Scanning for large files...", total=None)
+        big_files = _scan_big_files(base, min_bytes, file_type, older)
+        progress.remove_task(task)
 
     if json_out:
         console.print_json(json.dumps(big_files, default=str))
@@ -231,10 +235,10 @@ def _size_and_count(path: Path, skip_paths: set[str]) -> tuple[int, int]:
     return total, count
 
 
-def analyze_disk(path: str = "~", json_out: bool = False):
-    base = Path(path).expanduser()
-    console.print(Panel(f"[bold]macmon disk[/] -- {base}", border_style="cyan"))
-
+def _disk_entries(base: Path) -> list[dict]:
+    """Top-level entries of ``base`` with their sizes, biggest first (the
+    figures behind ``macmon disk`` and the app's Disk view). Raises OSError /
+    PermissionError when ``base`` itself cannot be listed."""
     home = Path.home()
     skip_paths = set()
     if base == home:
@@ -244,37 +248,45 @@ def analyze_disk(path: str = "~", json_out: bool = False):
         skip_paths.update({"/System/Volumes", "/Volumes", "/dev", "/proc"})
 
     entries = []
+    for d in base.iterdir():
+        if d.is_symlink() or str(d) in skip_paths:
+            continue
+        try:
+            if d.is_dir():
+                s, count = _size_and_count(d, skip_paths)
+                mtime = d.stat().st_mtime
+                entries.append({
+                    "path": str(d),
+                    "name": d.name,
+                    "size": s,
+                    "count": count,
+                    "mtime": mtime,
+                })
+            elif d.is_file():
+                st = d.stat()
+                entries.append({
+                    "path": str(d),
+                    "name": d.name,
+                    "size": st.st_size,
+                    "count": 1,
+                    "mtime": st.st_mtime,
+                })
+        except (OSError, PermissionError):
+            continue
+
+    entries.sort(key=lambda x: x["size"], reverse=True)
+    return entries
+
+
+def analyze_disk(path: str = "~", json_out: bool = False):
+    base = Path(path).expanduser()
+    console.print(Panel(f"[bold]macmon disk[/] -- {base}", border_style="cyan"))
+
     try:
-        for d in base.iterdir():
-            if d.is_symlink() or str(d) in skip_paths:
-                continue
-            try:
-                if d.is_dir():
-                    s, count = _size_and_count(d, skip_paths)
-                    mtime = d.stat().st_mtime
-                    entries.append({
-                        "path": str(d),
-                        "name": d.name,
-                        "size": s,
-                        "count": count,
-                        "mtime": mtime,
-                    })
-                elif d.is_file():
-                    st = d.stat()
-                    entries.append({
-                        "path": str(d),
-                        "name": d.name,
-                        "size": st.st_size,
-                        "count": 1,
-                        "mtime": st.st_mtime,
-                    })
-            except (OSError, PermissionError):
-                continue
+        entries = _disk_entries(base)
     except (OSError, PermissionError):
         console.print(f"[red]Cannot read {base}[/]")
         return
-
-    entries.sort(key=lambda x: x["size"], reverse=True)
     total = sum(e["size"] for e in entries)
 
     if json_out:

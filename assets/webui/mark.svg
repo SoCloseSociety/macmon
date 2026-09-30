@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AegisForge mark (vector source of truth). Floating glyph, NO tile behind it (SentinelOS rule: glyphs float
+     on an all-dark desktop). Same 48-unit shield as sentinel-android's ic_sentinel_mark so the two apps read as
+     one family: Sentinel = shield + watching eye + line; AegisForge = shield + forge ember (hex coal, bolt) + anvil
+     line. Readable from 16px (shield silhouette + one warm dot) to 1024px (facets, bolt, glow).
+     Colors: mint #34E5A0 (family line), ember ramp #FFF1C6 -> #FBBF24 -> #FF7A1A (AegisForge signature). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 48 48">
+  <defs>
+    <radialGradient id="af-ember" cx="50%" cy="42%" r="60%">
+      <stop offset="0" stop-color="#FFF1C6"/>
+      <stop offset="0.45" stop-color="#FBBF24"/>
+      <stop offset="1" stop-color="#FF7A1A"/>
+    </radialGradient>
+    <linearGradient id="af-line" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5EEAD4"/>
+      <stop offset="1" stop-color="#34E5A0"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(24 24)">
+    <!-- shield (the Aegis): heater silhouette, mint light-line -->
+    <path d="M0,-18 L14,-13 V0 C14,8 8,14 0,18 C-8,14 -14,8 -14,0 V-13 Z"
+          fill="none" stroke="url(#af-line)" stroke-width="2.2" stroke-linejoin="round"/>
+    <!-- inner facet: a second, fainter shield line = cut-glass depth -->
+    <path d="M0,-14.2 L10.6,-10.4 V0 C10.6,6.2 6.2,10.8 0,14 C-6.2,10.8 -10.6,6.2 -10.6,0 V-10.4 Z"
+          fill="none" stroke="#34E5A0" stroke-width="0.7" stroke-opacity="0.45" stroke-linejoin="round"/>
+    <!-- ember glow (fake bloom: a larger, transparent coal) -->
+    <polygon points="0,-10.2 8.4,-5.4 8.4,4.2 0,9 -8.4,4.2 -8.4,-5.4" fill="#FF7A1A" fill-opacity="0.22"/>
+    <!-- ember coal (the Forge): pointy-top hexagon, white-hot heart -->
+    <polygon points="0,-8.5 6.5,-4.75 6.5,2.75 0,6.5 -6.5,2.75 -6.5,-4.75" fill="url(#af-ember)"/>
+    <!-- bolt: power / performance, cut into the coal -->
+    <path d="M1.3,-7 L-2.6,-0.9 H0 L-1.2,3.3 L2.6,-2.6 H0 Z" fill="#FFFDF5"/>
+    <!-- anvil / hearth line under the coal (echoes the Sentinel mark's base line) -->
+    <path d="M-6,10.5 H6" fill="none" stroke="#FF7A1A" stroke-width="2.2" stroke-linecap="round"/>
+  </g>
+</svg>

@@ -135,6 +135,11 @@ def _docker_overview(json_out: bool = False):
 
 def _docker_overview_json():
     """The overview as one JSON document (no Rich panels on stdout)."""
+    console.print_json(data=_overview_data())
+
+
+def _overview_data() -> dict:
+    """The overview figures as a dict (the CLI's --json and the app share it)."""
     fmt = "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}\t{{.Size}}\t{{.State}}"
     data = {"disk_usage": [], "running": [], "stopped": [], "dangling_images": 0, "volumes": 0}
     out, _, rc = run_cmd(["docker", "system", "df", "--format", "{{.Type}}\t{{.TotalCount}}\t{{.Active}}\t{{.Size}}\t{{.Reclaimable}}"], timeout=15)
@@ -152,7 +157,36 @@ def _docker_overview_json():
     out, _, rc = run_cmd(["docker", "volume", "ls", "-q"], timeout=10)
     if rc == 0:
         data["volumes"] = len(out.strip().splitlines()) if out.strip() else 0
-    console.print_json(data=data)
+    return data
+
+
+def _containers_data() -> list[dict]:
+    """Every container (running + stopped) as dicts."""
+    out, _, rc = run_cmd([
+        "docker", "ps", "-a", "--format",
+        "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}\t{{.Size}}\t{{.State}}"
+    ], timeout=10)
+    return _tsv_rows(out, _CONTAINER_KEYS) if rc == 0 else []
+
+
+def _images_data() -> list[dict]:
+    out, _, rc = run_cmd([
+        "docker", "images", "--format",
+        "{{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}\t{{.CreatedSince}}"
+    ], timeout=10)
+    return _tsv_rows(out, _IMAGE_KEYS) if rc == 0 else []
+
+
+def _volumes_data() -> list[dict]:
+    out, _, rc = run_cmd([
+        "docker", "volume", "ls", "--format",
+        "{{.Name}}\t{{.Driver}}\t{{.Mountpoint}}"
+    ], timeout=10)
+    rows = _tsv_rows(out, _VOLUME_KEYS) if rc == 0 else []
+    used_out, _, _ = run_cmd(["docker", "ps", "-a", "--format", "{{.Mounts}}"], timeout=5)
+    for r in rows:
+        r["in_use"] = r["name"] in (used_out or "")
+    return rows
 
 
 def _list_containers(json_out: bool = False):
@@ -343,6 +377,33 @@ def _docker_prune(force_yes: bool = False):
         console.print(Panel(out.strip(), title="After Cleanup", border_style="green"))
 
     log_action("docker_prune", "full cleanup")
+
+
+def _docker_prune_dangling(force_yes: bool = False) -> dict:
+    """The GUARDED prune: dangling images only (``docker image prune -f``,
+    never ``-a``) -- no containers, volumes, build cache or networks. What the
+    AegisForge app's Docker funnel runs after its confirm step. Returns
+    ``{"ok", "removed", "reclaimed", "detail"}``."""
+    out, _, rc = run_cmd(["docker", "images", "-f", "dangling=true", "-q"], timeout=10)
+    count = len(out.strip().splitlines()) if rc == 0 and out.strip() else 0
+    if count == 0:
+        console.print("[green]No dangling images.[/]")
+        return {"ok": True, "removed": 0, "reclaimed": "0 B", "detail": "No dangling images."}
+    if not confirm_action(f"Remove {count} dangling image(s)? (dangling only -- nothing in use)", force_yes=force_yes):
+        return {"ok": False, "removed": 0, "reclaimed": "0 B", "detail": "cancelled"}
+    out, err, rc = run_cmd(["docker", "image", "prune", "-f"], timeout=120)
+    if rc != 0:
+        detail = (err or "prune failed").strip()[:200]
+        console.print(f"[red]{detail}[/]")
+        return {"ok": False, "removed": 0, "reclaimed": "0 B", "detail": detail}
+    reclaimed = "0 B"
+    for line in (out or "").splitlines():
+        if "reclaimed" in line.lower():
+            reclaimed = line.split(":", 1)[-1].strip()
+    console.print(f"[green]Dangling images pruned: {count} removed, {reclaimed} reclaimed[/]")
+    log_action("docker_prune_dangling", f"{count} images, {reclaimed}")
+    return {"ok": True, "removed": count, "reclaimed": reclaimed,
+            "detail": f"{count} dangling image(s) removed, {reclaimed} reclaimed"}
 
 
 def _docker_stop_all(force_yes: bool = False):

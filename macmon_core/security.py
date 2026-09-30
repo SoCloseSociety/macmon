@@ -118,42 +118,44 @@ def run_security(
     _full_security_scan(json_out)
 
 
-def _full_security_scan(json_out: bool = False):
-    console.print(Panel("[bold red]macmon security[/] -- Full Security Scan", border_style="red"))
-
+def _security_checks(progress=None) -> tuple[int, list[dict]]:
+    """Run the ten checks and score them (100 minus the weighted failures).
+    Returns ``(score, findings)``; ``progress(msg)`` is called before each
+    check so a console can narrate. Shared by the CLI table and the app."""
+    say = progress or (lambda m: None)
     findings = []
     score = 100
 
     # 1. Firewall status
-    console.print("[cyan]Checking firewall...[/]")
+    say("Checking firewall...")
     fw = _check_firewall()
     findings.append(fw)
     if fw["status"] == "fail":
         score -= 15
 
     # 2. SIP status
-    console.print("[cyan]Checking System Integrity Protection...[/]")
+    say("Checking System Integrity Protection...")
     sip = _check_sip()
     findings.append(sip)
     if sip["status"] == "fail":
         score -= 20
 
     # 3. Gatekeeper
-    console.print("[cyan]Checking Gatekeeper...[/]")
+    say("Checking Gatekeeper...")
     gk = _check_gatekeeper()
     findings.append(gk)
     if gk["status"] == "fail":
         score -= 10
 
     # 4. FileVault
-    console.print("[cyan]Checking FileVault encryption...[/]")
+    say("Checking FileVault encryption...")
     fv = _check_filevault()
     findings.append(fv)
     if fv["status"] == "fail":
         score -= 15
 
     # 5. Suspicious connections
-    console.print("[cyan]Scanning network connections...[/]")
+    say("Scanning network connections...")
     sus_conns = _find_suspicious_connections()
     if sus_conns:
         findings.append({
@@ -167,7 +169,7 @@ def _full_security_scan(json_out: bool = False):
         findings.append({"name": "Suspicious Connections", "status": "pass", "detail": "No suspicious connections"})
 
     # 6. Remote access tools
-    console.print("[cyan]Scanning for remote access tools...[/]")
+    say("Scanning for remote access tools...")
     remote_tools = _find_remote_tools()
     if remote_tools:
         findings.append({
@@ -181,7 +183,7 @@ def _full_security_scan(json_out: bool = False):
         findings.append({"name": "Remote Access Tools", "status": "pass", "detail": "None running"})
 
     # 7. Suspicious processes
-    console.print("[cyan]Scanning for suspicious processes...[/]")
+    say("Scanning for suspicious processes...")
     sus_procs = _find_suspicious_processes()
     if sus_procs:
         findings.append({
@@ -195,7 +197,7 @@ def _full_security_scan(json_out: bool = False):
         findings.append({"name": "Suspicious Processes", "status": "pass", "detail": "None found"})
 
     # 8. Suspicious LaunchAgents/Daemons
-    console.print("[cyan]Scanning startup items...[/]")
+    say("Scanning startup items...")
     sus_launch = _find_suspicious_launch_items()
     if sus_launch:
         findings.append({
@@ -209,20 +211,25 @@ def _full_security_scan(json_out: bool = False):
         findings.append({"name": "Suspicious Startup Items", "status": "pass", "detail": "None found"})
 
     # 9. Open sharing services
-    console.print("[cyan]Checking sharing services...[/]")
+    say("Checking sharing services...")
     sharing = _check_sharing()
     findings.append(sharing)
     if sharing["status"] == "warn":
         score -= 5
 
     # 10. SSH check
-    console.print("[cyan]Checking SSH...[/]")
+    say("Checking SSH...")
     ssh = _check_ssh_security()
     findings.append(ssh)
     if ssh["status"] == "warn":
         score -= 5
 
-    score = max(0, score)
+    return max(0, score), findings
+
+
+def _full_security_scan(json_out: bool = False):
+    console.print(Panel("[bold red]macmon security[/] -- Full Security Scan", border_style="red"))
+    score, findings = _security_checks(lambda m: console.print(f"[cyan]{m}[/]"))
 
     # Display results
     table = Table(
@@ -918,9 +925,11 @@ def _unblock_ip(ip: str):
     log_action("security_unblock_ip", ip)
 
 
-def _quarantine_process(target: str):
+def _quarantine_process(target: str, force_yes: bool = False):
     """Kill process + block its network access. Never macmon itself, its
-    parent shell, PID 0/1 or a system-critical process (processes blacklist)."""
+    parent shell, PID 0/1 or a system-critical process (processes blacklist).
+    ``force_yes`` skips the per-match prompt (the app's confirm modal IS the
+    confirmation; a stdin prompt would hang the windowed app)."""
     from .processes import _is_protected_target
     matches = []
     try:
@@ -957,17 +966,18 @@ def _quarantine_process(target: str):
             console.print(f"  [dim]PID {proc.pid}: {exe}[/]")
 
     for p in matches:
-        _quarantine_one(p)
+        _quarantine_one(p, force_yes=force_yes)
 
 
-def _quarantine_one(p):
+def _quarantine_one(p, force_yes: bool = False):
     try:
         name = p.name()
         pid = p.pid
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return
 
-    if not confirm_action(f"Quarantine {name} (PID {pid})? This will kill it and block its binary."):
+    if not confirm_action(f"Quarantine {name} (PID {pid})? This will kill it and block its binary.",
+                          force_yes=force_yes):
         return
 
     # Get binary path

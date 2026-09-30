@@ -264,10 +264,12 @@ class TestQuarantineKillPath:
     def test_ordinary_process_reaches_quarantine(self, monkeypatch):
         seen = []
         _install_process_table(monkeypatch, [FakeProc(HIGH_PID, "evil")])
-        monkeypatch.setattr(security, "_quarantine_one", lambda p: seen.append(p.pid))
+        monkeypatch.setattr(security, "_quarantine_one", lambda p, force_yes=False: seen.append((p.pid, force_yes)))
         _capture(monkeypatch, security)
         security._quarantine_process("evil")
-        assert seen == [HIGH_PID]
+        assert seen == [(HIGH_PID, False)]            # the CLI still prompts
+        security._quarantine_process("evil", force_yes=True)
+        assert seen[-1] == (HIGH_PID, True)           # the app's modal was the confirmation
 
 
 class TestUninstallerKillPath:

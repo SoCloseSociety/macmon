@@ -260,23 +260,11 @@ def run_cleaner(
         return
 
     # Full system clean
-    results = []
-
     console.print(Panel("[bold]macmon clean[/] -- System Cleaner", border_style="cyan"))
 
     with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as progress:
-        task = progress.add_task("Scanning system junk...", total=None)
-        junk = _scan_system_junk()
-        results.extend(junk)
-        progress.update(task, description="Scanning browser caches...")
-        browser_junk = _scan_all_browsers()
-        results.extend(browser_junk)
-        progress.update(task, description="Scanning app caches...")
-        app_junk = _scan_app_caches()
-        results.extend(app_junk)
-        progress.update(task, description="Scanning user caches...")
-        user_cache = _scan_user_caches()
-        results.extend(user_cache)
+        task = progress.add_task("Scanning...", total=None)
+        results = _scan_all(lambda m: progress.update(task, description=m))
         progress.remove_task(task)
 
     # Display results
@@ -316,6 +304,24 @@ def run_cleaner(
         _interactive_clean(results, permanent, force_yes=force_yes)
 
 
+def _scan_all(progress=None) -> list[dict]:
+    """The full-clean preview: system junk + browser caches + app caches +
+    user caches, each ``{"name", "size", "count", "paths"}``. Nothing is
+    touched. ``progress(msg)`` narrates each phase (the CLI spinner, the app's
+    funnel). Shared by ``macmon clean`` and the AegisForge app."""
+    say = progress or (lambda m: None)
+    results = []
+    say("Scanning system junk...")
+    results.extend(_scan_system_junk())
+    say("Scanning browser caches...")
+    results.extend(_scan_all_browsers())
+    say("Scanning app caches...")
+    results.extend(_scan_app_caches())
+    say("Scanning user caches...")
+    results.extend(_scan_user_caches())
+    return results
+
+
 def _clean_paths(paths: list[str], permanent: bool = False) -> int:
     """Delete each path, returning the number of bytes actually freed."""
     freed = 0
@@ -332,7 +338,9 @@ def _clean_paths(paths: list[str], permanent: bool = False) -> int:
     return freed
 
 
-def _execute_clean(results: list[dict], permanent: bool = False):
+def _execute_clean(results: list[dict], permanent: bool = False) -> int:
+    """Clean every path of every result (Trash-first unless ``permanent``).
+    Returns the bytes actually freed."""
     total_freed = 0
     for r in results:
         total_freed += _clean_paths(r.get("paths", []), permanent)
@@ -347,6 +355,7 @@ def _execute_clean(results: list[dict], permanent: bool = False):
     )
     db.commit()
     db.close()
+    return total_freed
 
 
 def _interactive_clean(results: list[dict], permanent: bool = False, force_yes: bool = False):
