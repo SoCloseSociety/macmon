@@ -5,7 +5,7 @@ All notable changes to macmon are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.5.0] - 2026-09-30
 
 ### Changed -- AegisForge.app design system
 - **One palette, three surfaces.** `assets/webui/app.css` is now a real design system: the brand tokens (`--af-*`, verbatim from `macmon_core/aegis.py` `C[]` and the AegisForge brand kit `palette.md`) feed a semantic layer (`--bg/--surface/--border/--text/--muted`, `--accent` mint / `--action` ember, `--sev-ok|info|low|medium|high|critical`, tints), a modular type scale, a 4-based spacing scale, radii, elevation, motion (durations + easings) and z-index tokens. Components only reference semantic tokens, so the Rich console and the app share one palette (the suite asserts every `aegis.C` hex is in the stylesheet).
@@ -17,7 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Offline and sink-free, still.** No `@font-face`, `@import`, `url()` or remote reference of any kind (IBM Plex when installed locally, the system UI face otherwise); icons are inline SVG paths on `currentColor`; every node is still built with the text-only `h()` helper (no `innerHTML` anywhere), the CSP is unchanged.
 - **Bridge contract:** every signal echoes `process_guard()`'s `ct` as `(pid, create_time, override)`; quarantine now runs the same guarded-acknowledgement funnel as kill and passes `(pid, ct, override)`.
 - Fixed: the Clean stepper flipped every step to "done" on first render (`classList.toggle(name, undefined)` toggles instead of forcing).
-- Tests: `tests/test_app_design.py` locks the palette mirror, both themes, the offline / no-sink invariants, read-only affordances, a11y hooks, responsive rules and the html / css / js structural contract (every id the script touches exists, every static class it emits is styled). 649 tests.
+- Tests: `tests/test_app_design.py` locks the palette mirror, both themes, the offline / no-sink invariants, read-only affordances, a11y hooks, responsive rules and the html / css / js structural contract (every id the script touches exists, every static class it emits is styled).
+
+### Fixed -- adversarial audit of v1.4.0 + cross-platform
+
+A Fable adversarial audit of the app, verified on real Windows (Python 3.14) and macOS.
+
+- **The js_api bridge holds its guardrails harder** (`macmon_core/app_api.py`). `resume_process` accepts the page's uniform `(pid, ct, override)` call (it was crashing with a `TypeError`, so SIGCONT never reached a suspended process). `quarantine` now holds the same guard as `kill` -- it escalates (SIGTERM -> SIGKILL + a firewall block), so a `never_touch` process (fleet sshd, an agent session, an IDE, a container) is refused unless acknowledged via `override`, and `process_guard` returns `create_time` so the recycled-PID check runs. Signals also refuse AegisForge's own process tree (the WKWebView renderer / helpers) -- suspending one would freeze the app window, and the plain protected set never named them. `sentinel_set_auto` coerces through `aegis._bool`, so an OFF-looking string (`"no"`, `"off "`, `"None"`, `"0.0"`) can no longer switch a remediation level ON. `clean_execute` rejects a non-list `ids` and runs the whole check-and-consume under the engine lock (a preview cannot be executed twice nor wiped by a concurrent scan). `purge_ram` is macOS-gated.
+- **The loopback server refuses cross-site requests** (`macmon_core/app_webui.py`). A page on another origin could point an `<img>`/`fetch` at `127.0.0.1` -- the browser fills a loopback `Host`, so the Host gate alone passed it and (though no bytes are readable) the walk still ran. Requests labelled `Sec-Fetch-Site: cross-site` are now refused. `/api/disk` and `/api/bigfiles` share a bounded semaphore so a burst cannot spawn unbounded `os.walk`s, and `security_dict` is macOS-gated like the CLI (off macOS the checks all read "could not check" and the tab would have shown a confident ~95/100 on an uninspected box).
+- **`never_touch` / `family_of` match protected paths on Windows** (`macmon_core/aegis.py`). A Windows cmdline mixes separators (`os.path.expanduser` keeps the tail's `/`, e.g. `C:\Users\User\.claude/hooks/x.js`), so the `\`-only home-infra prefixes and the forward-slash automation patterns never matched: a Claude / `.claude` / `.ollama` infra process (and a puppeteer cache path) would not have been protected on a Windows fleet node. Matching is now separator-agnostic.
+- **Auto-reap spares a socketless home-script worker.** A periodic worker (`nohup python scheduler.py &`) that sleeps minutes between runs, reparented to PID 1 with a proven-dead parent and no socket, is indistinguishable from a hung leak within a bounded idle window -- with `auto_reap_orphans` ON it could be SIGTERMed mid-sleep. AUTO-reap now leaves any leak running a user script under the home directory for manual `--reap-orphans` (a leaked headless browser stays the auto target); the human-confirmed manual path still reaps it.
+- **`_scan_big_files` skips the same mount points as `_disk_entries`** (`/proc`, `/dev`, `/Volumes`, `/System/Volumes`, ...): a scan of `/` no longer hits `/proc/kcore` or double-walks the data volume through the firmlink.
+- Suite: 682 tests (was 611), green on macOS and on Windows / Python 3.14 (9 macOS-only skips).
 
 ## [1.4.0] - 2026-09-30
 
@@ -149,7 +160,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release: a terminal-native macOS system monitor and cleaner -- 30 commands including a live TUI dashboard, process manager, system cleaner, dev garbage collector, security scanner, Docker manager, disk analyzer, duplicate finder, and an autopilot daemon. 100% local, zero telemetry, MIT licensed.
 
-[Unreleased]: https://github.com/SoCloseSociety/macmon/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/SoCloseSociety/macmon/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/SoCloseSociety/macmon/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/SoCloseSociety/macmon/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/SoCloseSociety/macmon/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/SoCloseSociety/macmon/compare/v1.2.0...v1.2.1

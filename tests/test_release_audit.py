@@ -357,7 +357,7 @@ class TestVersion:
         import tomllib
         pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
         with open(pyproject, "rb") as f:
-            assert tomllib.load(f)["project"]["version"] == macmon.__version__ == "1.4.0"
+            assert tomllib.load(f)["project"]["version"] == macmon.__version__ == "1.5.0"
 
 
 # ── 6. dashboard --refresh is honoured ───────────────────────────────────
