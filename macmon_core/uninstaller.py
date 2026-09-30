@@ -1,6 +1,5 @@
 """Full app uninstaller with leftover detection for macmon."""
 
-import os
 import shutil
 import time
 from pathlib import Path
@@ -288,8 +287,9 @@ def _get_bundle_executable(app_name: str) -> str:
 
 def _kill_app_processes(app_name: str):
     # Exact process names only (case-insensitive): app name and its
-    # CFBundleExecutable. Never kill by substring, never kill ourselves.
-    my_pid = os.getpid()
+    # CFBundleExecutable. Never kill by substring, never kill ourselves, our
+    # parent shell, PID 0/1 or a system-critical process (Finder, Dock, ...).
+    from .processes import _is_protected_target
     targets = {app_name.lower(), app_name.lower().replace(".app", "")}
     exe = _get_bundle_executable(app_name)
     if exe:
@@ -298,7 +298,7 @@ def _kill_app_processes(app_name: str):
     killed = 0
     for p in psutil.process_iter(["pid", "name"]):
         try:
-            if p.info["pid"] == my_pid:
+            if _is_protected_target(p.info["pid"], p.info["name"]):
                 continue
             if (p.info["name"] or "").lower() in targets:
                 p.terminate()
@@ -313,7 +313,7 @@ def _kill_app_processes(app_name: str):
         # SIGKILL stragglers
         for p in psutil.process_iter(["pid", "name"]):
             try:
-                if p.info["pid"] == my_pid:
+                if _is_protected_target(p.info["pid"], p.info["name"]):
                     continue
                 if (p.info["name"] or "").lower() in targets:
                     p.kill()

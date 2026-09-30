@@ -184,12 +184,17 @@ def _find_process(target: str) -> list[psutil.Process]:
     return matches
 
 
-def kill_process(target: str, category: str = None, force_yes: bool = False):
+def kill_process(target: str = None, category: str = None, force_yes: bool = False):
+    if not target and not category:
+        console.print("[red]Give a process name/PID, or --category <cat>.[/]")
+        return
     if category:
         procs = []
         for p in psutil.process_iter(["pid", "name"]):
             try:
-                if p.info["pid"] == os.getpid():
+                # Same blacklist as the name/PID path: never macmon itself, its
+                # parent shell, PID 0/1 or a system-critical process.
+                if _is_protected_target(p.info["pid"], p.info["name"]):
                     continue
                 if categorize_process(p.info["name"] or "") == category:
                     procs.append(p)
@@ -273,6 +278,11 @@ def renice_process(target: str, value: int):
 
 
 def quit_app(app_name: str):
+    from .platform_compat import require_os
+    m = require_os("macOS")
+    if m:
+        console.print(f"[yellow]{m}[/]")
+        return
     safe_name = app_name.replace("\\", "\\\\").replace('"', '\\"')
     out, err, rc = run_cmd([
         "osascript", "-e", f'tell application "{safe_name}" to quit'
@@ -285,6 +295,11 @@ def quit_app(app_name: str):
 
 
 def restart_app(app_name: str):
+    from .platform_compat import require_os
+    m = require_os("macOS")
+    if m:
+        console.print(f"[yellow]{m}[/]")
+        return
     quit_app(app_name)
     time.sleep(2)
     out, err, rc = run_cmd(["open", "-a", app_name])
@@ -402,10 +417,18 @@ def _kill_zombies(force_yes: bool = False) -> int:
     return 0
 
 
-def _kill_orphans(force_yes: bool = False) -> int:
+def _orphan_candidates() -> tuple[list[dict], int]:
+    """(orphans, spared): ppid==1 dev processes with no tty and an executable
+    outside the app/package-manager trees -- MINUS anything AegisForge's
+    never-touch set protects or that is in service (listening / connected).
+    A backgrounded `next dev` on :3000 is reparented to PID 1 the moment its
+    shell exits; it is a live server, not a stray, and must never be swept."""
+    from . import aegis  # lazy: aegis imports this module (protected-target set)
     orphans = []
+    spared = 0
     dev_categories = {"llm", "ide", "node", "python", "build"}
-    for p in psutil.process_iter(["pid", "ppid", "name", "cpu_percent", "memory_info", "status", "create_time"]):
+    for p in psutil.process_iter(["pid", "ppid", "name", "cpu_percent", "memory_info", "status",
+                                  "create_time", "cmdline", "exe", "username"]):
         try:
             info = p.info
             if info["ppid"] != 1 or info["pid"] == os.getpid():
@@ -432,6 +455,22 @@ def _kill_orphans(force_yes: bool = False) -> int:
                 "/opt/homebrew/", "/usr/local/", "/opt/local/", "/nix/",
             )):
                 continue
+            # The same judgment AegisForge's reaper applies: a live workload,
+            # an agent session, the fleet, the OS -- or anything serving or
+            # talking to someone (LISTEN / ESTABLISHED / bound unix socket).
+            # Unknown (None) reads as in service: skip.
+            cand = {
+                "pid": info["pid"], "ppid": info["ppid"], "name": name,
+                "cmd": " ".join(info.get("cmdline") or []), "exe": exe,
+                "user": info.get("username") or "",
+                "cpu": float(info.get("cpu_percent") or 0.0),
+            }
+            if aegis.never_touch(cand) is not None:
+                spared += 1
+                continue
+            if aegis._in_service(info["pid"], aegis.family_of(cand)) is not False:
+                spared += 1
+                continue
             orphans.append({
                 **info,
                 "name": name,
@@ -440,12 +479,19 @@ def _kill_orphans(force_yes: bool = False) -> int:
             })
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
+    return orphans, spared
+
+
+def _kill_orphans(force_yes: bool = False) -> int:
+    orphans, spared = _orphan_candidates()
+    spared_note = f"{spared} live/listening server{'s' if spared != 1 else ''} spared"
 
     if not orphans:
-        console.print("[green]No orphan dev processes found.[/]")
+        console.print(f"[green]No orphan dev processes found.[/] [dim]({spared_note})[/]")
         return 0
 
-    table = Table(title=f"Orphan Dev Processes ({len(orphans)})", border_style="yellow")
+    table = Table(title=f"Orphan Dev Processes ({len(orphans)})", border_style="yellow",
+                  caption=spared_note)
     table.add_column("PID", width=7)
     table.add_column("Name", width=24)
     table.add_column("CPU%", width=7, justify="right")
@@ -656,44 +702,77 @@ def manage_ports(free_port: int = None, free_all: bool = False, force_yes: bool 
     table.add_column("RAM", width=10, justify="right")
     table.add_column("Status", width=12)
 
-    # Use lsof fallback since psutil.net_connections needs root on macOS
+    holders = _port_holders(watch_ports)
+    if holders is None:
+        return
     for port in watch_ports:
-        out, _, rc = run_cmd(["lsof", "-ti", f"tcp:{port}"], timeout=3)
-        if rc == 0 and out.strip():
-            for pid_str in out.strip().splitlines():
-                try:
-                    pid = int(pid_str.strip())
-                    try:
-                        p = psutil.Process(pid)
-                        status_color = "green" if p.status() == psutil.STATUS_RUNNING else "yellow"
-                        table.add_row(
-                            str(port), str(pid), p.name()[:24],
-                            format_size(p.memory_info().rss),
-                            f"[{status_color}]{p.status()}[/]",
-                        )
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        table.add_row(str(port), str(pid), "?", "?", "[red]dead[/]")
-                except ValueError:
-                    pass
+        for pid in holders.get(port, []):
+            try:
+                p = psutil.Process(pid)
+                status_color = "green" if p.status() == psutil.STATUS_RUNNING else "yellow"
+                table.add_row(
+                    str(port), str(pid), p.name()[:24],
+                    format_size(p.memory_info().rss),
+                    f"[{status_color}]{p.status()}[/]",
+                )
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                table.add_row(str(port), str(pid), "?", "?", "[red]dead[/]")
 
     console.print(table)
 
 
+def _port_holders(ports: list[int]):
+    """{port: [pid, ...]} for every TCP socket bound to one of `ports`.
+
+    psutil.net_connections first: it works unprivileged on Windows and Linux
+    (no lsof there). On macOS it raises AccessDenied for non-root, so fall back
+    to `lsof -ti tcp:PORT` exactly as before. None when neither source can
+    answer (lsof missing) -- callers print nothing rather than an empty table
+    that reads as "all ports free"."""
+    holders: dict[int, list[int]] = {}
+    try:
+        conns = psutil.net_connections(kind="inet")
+    except (psutil.AccessDenied, PermissionError):
+        conns = None
+    if conns is not None:
+        for c in conns:
+            if c.laddr and c.laddr.port in ports and c.pid:
+                if c.pid not in holders.setdefault(c.laddr.port, []):
+                    holders[c.laddr.port].append(c.pid)
+        return holders
+    for port in ports:
+        out, _, rc = run_cmd(["lsof", "-ti", f"tcp:{port}"], timeout=3)
+        if rc == -2:
+            console.print("[yellow]lsof not found and psutil needs root here -- no port info available.[/]")
+            return None
+        if rc == 0 and out.strip():
+            for pid_str in out.strip().splitlines():
+                try:
+                    pid = int(pid_str.strip())
+                except ValueError:
+                    continue
+                if pid not in holders.setdefault(port, []):
+                    holders[port].append(pid)
+    return holders
+
+
 def _free_port(port: int, force_yes: bool = False):
-    out, _, rc = run_cmd(["lsof", "-ti", f"tcp:{port}"], timeout=5)
-    if not (rc == 0 and out.strip()):
+    holders = _port_holders([port])
+    if holders is None:
+        return
+    pids = holders.get(port, [])
+    if not pids:
         console.print(f"[dim]Port {port} is not in use.[/]")
         return
     killed = 0
-    for pid_str in out.strip().splitlines():
+    for pid in pids:
         try:
-            pid = int(pid_str.strip())
             p = psutil.Process(pid)
             if confirm_action(f"Kill {p.name()} (PID {pid}) on port {port}?", force_yes=force_yes):
                 p.terminate()
                 killed += 1
                 log_action("free_port", f"port {port} pid {pid}")
-        except (ValueError, psutil.NoSuchProcess, psutil.AccessDenied) as e:
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
             console.print(f"[red]Error freeing port {port}: {e}[/]")
             continue
     if killed:

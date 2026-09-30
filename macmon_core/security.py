@@ -548,6 +548,22 @@ def _check_sharing() -> dict:
     return {"name": "Sharing Services", "status": "pass", "detail": "No sharing services active"}
 
 
+SSHD_CONFIG = Path("/etc/ssh/sshd_config")
+# Active directives only: a stock macOS/Linux sshd_config ships every default
+# COMMENTED OUT ("#PasswordAuthentication yes"), which a substring test flags.
+_SSHD_PASSWORD_AUTH_RE = re.compile(r"^\s*PasswordAuthentication\s+yes\b", re.M | re.I)
+_SSHD_ROOT_LOGIN_RE = re.compile(r"^\s*PermitRootLogin\s+yes\b", re.M | re.I)
+
+
+def _sshd_config_issues(content: str) -> list[str]:
+    issues = []
+    if _SSHD_PASSWORD_AUTH_RE.search(content):
+        issues.append("Password auth enabled (use keys instead)")
+    if _SSHD_ROOT_LOGIN_RE.search(content):
+        issues.append("Root login permitted")
+    return issues
+
+
 def _check_ssh_security() -> dict:
     # Check if SSH is enabled
     ssh_running = _service_active("com.openssh.sshd", 22)
@@ -557,14 +573,9 @@ def _check_ssh_security() -> dict:
         issues.append("SSH daemon is running")
 
     # Check for password auth in sshd_config
-    sshd_config = Path("/etc/ssh/sshd_config")
-    if sshd_config.exists():
+    if SSHD_CONFIG.exists():
         try:
-            content = sshd_config.read_text()
-            if "PasswordAuthentication yes" in content:
-                issues.append("Password auth enabled (use keys instead)")
-            if "PermitRootLogin yes" in content:
-                issues.append("Root login permitted")
+            issues.extend(_sshd_config_issues(SSHD_CONFIG.read_text()))
         except PermissionError:
             pass
 
@@ -908,18 +919,24 @@ def _unblock_ip(ip: str):
 
 
 def _quarantine_process(target: str):
-    """Kill process + block its network access."""
+    """Kill process + block its network access. Never macmon itself, its
+    parent shell, PID 0/1 or a system-critical process (processes blacklist)."""
+    from .processes import _is_protected_target
     matches = []
     try:
         pid = int(target)
-        matches.append(psutil.Process(pid))
-    except psutil.NoSuchProcess:
+        p = psutil.Process(pid)
+        if _is_protected_target(pid, p.name()):
+            console.print(f"[red]Refusing to quarantine protected process {p.name()} (PID {pid}).[/]")
+            return
+        matches.append(p)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
         pass
     except ValueError:
-        # Search by exact name (case-insensitive), never the current process
+        # Search by exact name (case-insensitive), never a protected process
         for proc in psutil.process_iter(["pid", "name"]):
             try:
-                if proc.info["pid"] == os.getpid():
+                if _is_protected_target(proc.info["pid"], proc.info["name"]):
                     continue
                 if (proc.info["name"] or "").lower() == target.lower():
                     matches.append(proc)

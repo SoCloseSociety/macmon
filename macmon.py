@@ -19,6 +19,8 @@ from rich.console import Console
 # Ensure macmon_core is importable when run as a script from any directory
 sys.path.insert(0, str(Path(__file__).parent))
 
+__version__ = "1.3.0"   # keep in sync with pyproject.toml [project].version
+
 app = typer.Typer(
     name="macmon",
     help="Mac Developer Monitor + System Cleaner -- CCleaner Pro level, 100% local.",
@@ -28,10 +30,22 @@ app = typer.Typer(
 console = Console()
 
 
+def _version_callback(value: bool):
+    if value:
+        typer.echo(f"macmon {__version__}")
+        raise typer.Exit()
+
+
 # ── Dashboard (default command) ──────────────────────────────────────────
 
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context):
+def main(
+    ctx: typer.Context,
+    version: bool = typer.Option(
+        False, "--version", "-V", help="Print the version and exit.",
+        callback=_version_callback, is_eager=True,
+    ),
+):
     """Launch the live dashboard if no subcommand given."""
     if ctx.invoked_subcommand is None:
         from macmon_core.dashboard import run_dashboard
@@ -40,7 +54,10 @@ def main(ctx: typer.Context):
 
 @app.command()
 def dashboard(
-    refresh: int = typer.Option(2, "--refresh", "-r", help="Refresh interval in seconds"),
+    refresh: Optional[int] = typer.Option(
+        None, "--refresh", "-r",
+        help="Refresh interval in seconds (default: config dashboard.refresh_seconds, 2)",
+    ),
 ):
     """Live system monitoring dashboard."""
     from macmon_core.dashboard import run_dashboard
@@ -63,11 +80,11 @@ def ps(
 
 @app.command()
 def kill(
-    target: str = typer.Argument(..., help="Process name or PID"),
+    target: Optional[str] = typer.Argument(None, help="Process name or PID (omit with --category)"),
     category: Optional[str] = typer.Option(None, "--category", "-c", help="Kill entire category"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ):
-    """Kill a process by name or PID."""
+    """Kill a process by name or PID, or a whole category (--category node)."""
     from macmon_core.processes import kill_process
     kill_process(target=target, category=category, force_yes=yes)
 
@@ -89,12 +106,14 @@ def resume(target: str = typer.Argument(..., help="Process name or PID")):
     resume_process(target)
 
 
-@app.command()
+# ignore_unknown_options: a negative nice value (`macmon nice node -5`) must
+# reach the int argument instead of being rejected as an unknown "-5" option.
+@app.command(context_settings={"ignore_unknown_options": True})
 def nice(
     target: str = typer.Argument(..., help="Process name or PID"),
     value: int = typer.Argument(..., help="Nice value (-20 to 19)"),
 ):
-    """Renice a process."""
+    """Renice a process (negative values need root: `sudo macmon nice node -5`)."""
     from macmon_core.processes import renice_process
     renice_process(target, value)
 
