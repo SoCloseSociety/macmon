@@ -483,7 +483,8 @@ class TestPage:
 class TestReadEndpoints:
     @pytest.fixture
     def quiet(self, monkeypatch):
-        from macmon_core import disk, docker_mgr, health, processes, security, sentinel
+        from macmon_core import disk, docker_mgr, health, platform_compat, processes, security, sentinel
+        monkeypatch.setattr(platform_compat, "require_os", lambda os_name: "")   # security_dict runs on any OS here
         monkeypatch.setattr(sentinel, "_load_tail", lambda n=16: [
             {"ts": 1.0, "cpu": 5, "ram": 50, "swap_gb": 1, "load1": 2, "disk_free_gb": 100},
             {"ts": 61.0, "cpu": 7, "ram": 52, "swap_gb": 1.2, "load1": 2.5, "disk_free_gb": 99}])
