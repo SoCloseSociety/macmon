@@ -320,7 +320,10 @@ _USER_APP_PREFIX = ("/applications/",)
 # servers, native hosts, extension helpers). Absolute prefixes on purpose: a
 # project's own `.claude/worktrees/...` checkout is a workspace, not this.
 _HOME_PROTECTED = tuple(
-    os.path.join(os.path.expanduser("~"), d, "").lower()     # trailing os.sep: ~/.claude/ or ...\.claude\
+    # trailing separator, normalized to '/' so the substring test is separator-agnostic:
+    # on Windows a cmdline mixes '\' and '/' (expanduser keeps the tail's '/'), so a
+    # backslash-only prefix would never match '...\.claude/hooks/x.js'.
+    (os.path.join(os.path.expanduser("~"), d, "").replace("\\", "/").lower())
     for d in (".claude", ".codex", ".cursor", ".vscode", ".ollama", ".macmon")
 )
 
@@ -343,7 +346,8 @@ def family_of(p: dict):
     name = (p.get("name") or "").lower()
     cmd = (p.get("cmd") or "").lower()
     exe = (p.get("exe") or "").lower()
-    hay = exe + " " + cmd
+    # '/'-normalized so the forward-slash automation paths match a Windows backslash cmdline too.
+    hay = (exe + " " + cmd).replace("\\", "/")
     if any(s in hay for s in _AUTOMATION_PATHS):
         return "headless"
     if "--headless" in cmd and any(w in name or w in exe for w in _BROWSER_WORDS):
@@ -380,7 +384,9 @@ def never_touch(p: dict):
         return "container"
     if name_l in _NEVER_TOUCH_NAME_EXACT or name_l.startswith(_NEVER_TOUCH_NAME_PREFIX):
         return "protected name"
-    hay = (p.get("cmd") or "").lower() + " " + (p.get("exe") or "").lower()
+    # Normalize path separators to '/': the patterns below are forward-slash, but a
+    # Windows cmdline/exe uses '\' -- without this a protected path would be missed off macOS.
+    hay = ((p.get("cmd") or "") + " " + (p.get("exe") or "")).replace("\\", "/").lower()
     for pat in _NEVER_TOUCH_CMD:
         if pat in hay:
             return f"protected ({pat})"
