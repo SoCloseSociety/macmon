@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-30
+
+### Fixed -- pre-release audit
+- **`sweep` no longer SIGTERMs live listening dev servers.** `_kill_orphans` classified any `ppid==1` dev process as an orphan; a backgrounded `node`/`next-server`/`vite` whose shell exited (still LISTENing) was killed. Candidates now pass `aegis.never_touch` + `aegis._in_service` (LISTEN/ESTABLISHED/unknown -> spared), the same guard the AegisForge reaper already had; the table reports "N live/listening server(s) spared".
+- **The protected-target blacklist is now enforced on every kill path.** `_is_protected_target` (PID <= 1, self, parent shell, launchd/kernel_task/WindowServer/loginwindow/Finder/Dock/SystemUIServer) guarded only `_find_process`; it now also guards `kill --category`, the dashboard digit-kill, `security --quarantine`, and the uninstaller's process kill -- each refuses `os.getppid()` / Finder / loginwindow. `macmon kill --category <c>` also works without a dummy target.
+- `macmon nice <target> -5` now parses (negative, priority-raising values were unreachable).
+- `security` SSH check uses an anchored regex, so a commented `#PasswordAuthentication yes` in the stock `sshd_config` no longer WARNs on every default install.
+- `docker --json` now emits JSON (it was accepted and ignored); `docker logs` includes stderr (containers that log to stderr no longer show "No logs"); `dashboard --refresh` overrides the config; `ports` / `ports --free` are psutil-first so they work on Windows/Linux without `lsof`; `startup --disable` persists (`launchctl disable`, not just `bootout`).
+
+### Added
+- `macmon --version` (and `-V`); `__version__` in `macmon.py`, pyproject at 1.3.0.
+
 ### Added -- AegisForge proactive layer
 - **AegisForge branding layer (user-facing only).** The sentinel now presents as *AegisForge -- fleet health, forged*: a Rich theme (`macmon_core/aegis.py: AEGIS_THEME`, tokens ground/surface/text/dim/mint/ember/amber/sky/critical/ok) drives the console and status panels, notifications are titled "AegisForge: ...", and the macOS notifier applet carries the AegisForge icon (`assets/aegisforge.icns`, `assets/macmon.icns` kept as fallback). The engine keeps its name everywhere that matters: the `macmon` CLI and console script, the `macmon_core` package, `macmon.py`, the LaunchAgent labels and the notifier bundle identifier are unchanged (Sentinel vendoring, PyPI and the notification permission all key on them).
 - **Anticipatory detectors** (`macmon_core/aegis.py`), computed by the 60s sampler over the metrics.jsonl history so they alert on *trajectory*, not just level. All ON by default, notify-only:
@@ -115,7 +127,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release: a terminal-native macOS system monitor and cleaner -- 30 commands including a live TUI dashboard, process manager, system cleaner, dev garbage collector, security scanner, Docker manager, disk analyzer, duplicate finder, and an autopilot daemon. 100% local, zero telemetry, MIT licensed.
 
-[Unreleased]: https://github.com/SoCloseSociety/macmon/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/SoCloseSociety/macmon/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/SoCloseSociety/macmon/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/SoCloseSociety/macmon/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/SoCloseSociety/macmon/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/SoCloseSociety/macmon/compare/v1.0.0...v1.1.0
