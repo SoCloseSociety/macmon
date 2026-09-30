@@ -676,3 +676,13 @@ class TestBigFilesSkipsMountPoints:
         # /proc, /dev, /Volumes are pruned; /System stays (only /System/Volumes is a mount)
         assert "home" in dirs and "System" in dirs
         assert "proc" not in dirs and "dev" not in dirs and "Volumes" not in dirs
+
+    def test_both_disk_walkers_share_the_mount_skip_set(self):
+        # _scan_big_files and _disk_entries must prune the SAME mount points, and
+        # _disk_entries must do it below "/" too (disk("/System") no double-walk).
+        import inspect
+        from macmon_core import disk
+        assert {"/proc", "/System/Volumes/Data", "/private/var/vm"} <= disk.SKIP_MOUNTS
+        assert "SKIP_MOUNTS" in inspect.getsource(disk._scan_big_files)
+        assert "SKIP_MOUNTS" in inspect.getsource(disk._disk_entries)
+        assert 'str(base) == "/"' not in inspect.getsource(disk._disk_entries)   # not gated on root only

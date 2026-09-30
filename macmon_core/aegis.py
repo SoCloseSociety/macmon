@@ -866,20 +866,24 @@ _SCRIPT_EXTS = (".py", ".pyw", ".js", ".mjs", ".cjs", ".ts", ".sh", ".rb", ".pl"
 
 
 def names_user_script(p: dict) -> bool:
-    """True if the cmdline runs a script FILE under the user's home directory
-    (and not a cache / automation path). A periodic worker -- `nohup python
+    """True if the cmdline runs a script FILE. A periodic worker -- `nohup python
     scheduler.py &`, `node cron.mjs` -- wakes only every few minutes and looks
     exactly like a hung leak while it sleeps, so a bounded idle streak cannot
     tell them apart. AUTO-reap therefore leaves these to the human (manual
     `--reap-orphans`); a leaked headless browser (an automation cache path) is
-    still the intended auto target."""
-    hay = (p.get("cmd") or "").replace("\\", "/").lower()
-    home = os.path.expanduser("~").replace("\\", "/").lower()
-    if not hay or not home or home not in hay:
+    still the intended auto target.
+
+    The home path is NOT required: a worker's argv often carries only a RELATIVE
+    script name (`python scheduler.py` -- the cwd is not in argv). Extensions are
+    matched on each token's real suffix via ``os.path.splitext``, never as a
+    substring, so ``.py`` does not match ``.pyenv`` (nor ``.sh`` ``.ssh`` etc.)
+    and a version-managed interpreter is not blanket-exempted."""
+    cmd = (p.get("cmd") or "").replace("\\", "/")
+    if not cmd:
         return False
-    if any(a in hay for a in _AUTOMATION_PATHS):    # puppeteer/playwright caches: the intended target
+    if any(a in cmd.lower() for a in _AUTOMATION_PATHS):    # puppeteer/playwright caches: the intended target
         return False
-    return any(ext in hay for ext in _SCRIPT_EXTS)
+    return any(os.path.splitext(tok)[1].lower() in _SCRIPT_EXTS for tok in cmd.split())
 
 
 def reap_leaks(leaks: list[dict], cfg: dict, astate: dict, now: float, auto: bool = True) -> list:

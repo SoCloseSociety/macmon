@@ -15,6 +15,14 @@ from rich.table import Table
 
 from .utils import console, dir_size, format_size, get_db
 
+# Mount points a full-disk walk (`disk`, `bigfiles`, the app's Disk view) must
+# never descend into: /proc/kcore is a ~128 TB sparse file, /Volumes holds
+# network / Time Machine mounts, and the data volume would be double-walked
+# through the /System/Volumes/Data firmlink. Shared by _scan_big_files and
+# _disk_entries so the two walkers cannot drift.
+SKIP_MOUNTS = {"/proc", "/dev", "/sys", "/Volumes", "/System/Volumes",
+               "/System/Volumes/Data", "/private/var/vm"}
+
 
 FILE_CATEGORIES = {
     "disk_image": {
@@ -89,12 +97,7 @@ def _scan_big_files(base: Path, min_bytes: int, file_type: str = None, older: in
     max_results = 200
 
     skip_dirs = {".git", "node_modules", ".venv", "venv", "__pycache__", ".Trash", "Library"}
-    # Absolute mount points to never descend into (aligned with _disk_entries): a
-    # scan of "/" would otherwise hit /proc/kcore (a ~128 TB sparse file), walk
-    # network / Time Machine mounts under /Volumes, and double-walk the data
-    # volume through the /System/Volumes/Data firmlink.
-    skip_abs = {"/proc", "/dev", "/sys", "/Volumes", "/System/Volumes",
-                "/System/Volumes/Data", "/private/var/vm"}
+    skip_abs = SKIP_MOUNTS      # shared with _disk_entries so the two walkers cannot drift
 
     # Bounded min-heap of (size, seq, entry) holding the N largest files
     heap = []
@@ -247,12 +250,14 @@ def _disk_entries(base: Path) -> list[dict]:
     figures behind ``macmon disk`` and the app's Disk view). Raises OSError /
     PermissionError when ``base`` itself cannot be listed."""
     home = Path.home()
-    skip_paths = set()
+    # Never descend into these mount points wherever they appear -- not only at
+    # "/": disk("/System") would otherwise double-walk the data volume through the
+    # /System/Volumes/Data firmlink, and disk("/private") would sum the swapfiles.
+    # Same set as _scan_big_files (SKIP_MOUNTS).
+    skip_paths = set(SKIP_MOUNTS)
     if base == home:
         skip_paths.add(str(home / ".Trash"))
         skip_paths.add(str(home / "Library/CloudStorage"))
-    if str(base) == "/":
-        skip_paths.update({"/System/Volumes", "/Volumes", "/dev", "/proc"})
 
     entries = []
     for d in base.iterdir():

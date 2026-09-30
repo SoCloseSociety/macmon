@@ -535,18 +535,24 @@ class TestReapInvariants:
         home = os.path.expanduser("~")
         assert aegis.names_user_script({"cmd": "python " + os.path.join(home, "proj", "loop.py")}) is True
         assert aegis.names_user_script({"cmd": "node " + os.path.join(home, "cron.mjs")}) is True
+        assert aegis.names_user_script({"cmd": "python scheduler.py"}) is True   # RELATIVE argv (nohup case)
+        assert aegis.names_user_script({"cmd": "node cron.mjs --once"}) is True
+        # a script anywhere is spared (safe direction) -- the reaper cannot prove it is not a worker
+        assert aegis.names_user_script({"cmd": "python /usr/local/bin/tool.py"}) is True
         # a leaked headless browser under an automation cache path stays the intended auto target
         assert aegis.names_user_script({"cmd": home + "/.cache/puppeteer/chrome-linux/chrome --headless"}) is False
-        # a script NOT under home is not covered by this home-worker rule
-        assert aegis.names_user_script({"cmd": "python /usr/local/bin/tool.py"}) is False
+        # splitext, not substring: a version-managed interpreter with NO script arg is NOT exempted
+        assert aegis.names_user_script({"cmd": home + "/.pyenv/versions/3.12.0/bin/python -c import time;time.sleep(9)"}) is False
+        assert aegis.names_user_script({"cmd": home + "/.rbenv/shims/ruby -e sleep"}) is False
+        assert aegis.names_user_script({"cmd": "ssh -i " + home + "/.ssh/id_rsa host"}) is False
         assert aegis.names_user_script({"cmd": "next-server"}) is False
 
     def test_auto_spares_a_socketless_home_script_worker_but_manual_reaps_it(self, monkeypatch):
         # The audit scenario: `nohup python scheduler.py &`, terminal closed ->
         # PID 1, proven-dead parent, no socket, idle between 15-min runs. A bounded
         # idle streak cannot tell it from a hung leak, so AUTO leaves it for the human.
-        script = os.path.join(os.path.expanduser("~"), "proj", "scheduler.py")
-        leak = {"pid": 5000, "ppid": 1, "name": "python3.12", "cmd": "python " + script,
+        # the literal audit scenario: argv carries only the RELATIVE script name
+        leak = {"pid": 5000, "ppid": 1, "name": "python3.12", "cmd": "python scheduler.py",
                 "exe": "python", "ct": 1000.0, "cpu": 0.0, "rss": 0, "user": "neo",
                 "status": "running", "tty": None, "proof": "parent 4000 exited",
                 "busy": False, "family": "python"}

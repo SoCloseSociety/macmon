@@ -442,6 +442,7 @@ async function secScan() {
   show($("sec-result"), h("div", { class: "card" }, working("firewall, SIP, Gatekeeper, FileVault, connections, remote tools, processes, startup items, sharing, SSH..."), skeleton(5)));
   try {
     const d = await get("/api/security");
+    if (d.error) { show($("sec-result"), h("div", { class: "card" }, errBox(d.error))); $("sec-note").textContent = ""; return; }
     const order = { fail: 0, warn: 1, pass: 2 };
     const items = [...(d.findings || [])].sort((a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3));
     const fails = items.filter((f) => f.status === "fail").length, warns = items.filter((f) => f.status === "warn").length;
@@ -550,7 +551,7 @@ async function loadBig() {
   finally { $("big-go").disabled = false; }
 }
 $("disk-go").addEventListener("click", loadDisk);
-$("disk-path").addEventListener("keydown", (e) => { if (e.key === "Enter") loadDisk(); });
+$("disk-path").addEventListener("keydown", (e) => { if (e.key === "Enter" && !$("disk-go").disabled) loadDisk(); });
 $("big-go").addEventListener("click", loadBig);
 // Both scans are explicit clicks: sizing a big home folder can take minutes.
 diskIdle();

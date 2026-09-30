@@ -135,6 +135,17 @@ def _is_own_process_tree(p: psutil.Process) -> bool:
     return False
 
 
+def _is_webkit_render(name: str) -> bool:
+    """True for a WKWebView helper process (``com.apple.WebKit.WebContent`` /
+    ``.GPU`` / ``.Networking``). On macOS these are XPC services launched by
+    launchd, so their ppid is 1 -- ``_is_own_process_tree`` never reaches them by
+    ancestry, yet AegisForge's own window IS one of them: suspending or killing it
+    freezes / tears down the app. They are never a useful target from a GUI system
+    tool (the CLI ``macmon kill`` can still reach one by PID), so the bridge
+    refuses the whole family."""
+    return (name or "").lower().startswith("com.apple.webkit.")
+
+
 class Api:
     """The js_api object. Every public method is callable from the page as
     ``window.pywebview.api.<name>(...)`` and returns a plain dict."""
@@ -167,9 +178,9 @@ class Api:
         if processes._is_protected_target(pid, name):
             return None, None, {"ok": False, "refused": "protected", "pid": pid, "name": name,
                                 "detail": f"{name} (PID {pid}) is protected: never signalled."}
-        if _is_own_process_tree(p):
+        if _is_own_process_tree(p) or _is_webkit_render(name):
             return None, None, {"ok": False, "refused": "protected", "pid": pid, "name": name,
-                                "detail": f"{name} (PID {pid}) is part of AegisForge itself: never signalled."}
+                                "detail": f"{name} (PID {pid}) is an app render process: never signalled."}
         ct = _float(create_time)
         try:
             live_ct = float(p.create_time() or 0.0)

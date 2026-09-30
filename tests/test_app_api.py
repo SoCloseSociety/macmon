@@ -505,9 +505,20 @@ class TestAuditHardening:
         r = api.purge_ram()                              # no_mutation proves processes.purge_ram is never reached
         assert r["ok"] is False and r["refused"] == "os"
 
-    def test_own_process_tree_is_never_signalled(self, table, api, no_mutation):
+    def test_own_descendant_is_never_signalled(self, table, api, no_mutation):
         me = os.getpid()
         table[me] = FakeProc(me, "AegisForge")
-        table[HIGH_PID] = FakeProc(HIGH_PID, "WebContent", ppid=me)   # our own renderer child
+        table[HIGH_PID] = FakeProc(HIGH_PID, "helper", ppid=me)       # an actual child of the app
         r = api.kill_process(HIGH_PID, CT)
-        assert r["ok"] is False and r["refused"] == "protected" and "AegisForge itself" in r["detail"]
+        assert r["ok"] is False and r["refused"] == "protected" and "render process" in r["detail"]
+
+    @pytest.mark.parametrize("name", ["com.apple.WebKit.WebContent", "com.apple.WebKit.GPU",
+                                      "com.apple.WebKit.Networking"])
+    def test_webkit_render_process_is_refused_even_at_pid1(self, table, api, no_mutation, name):
+        # WKWebView helpers are XPC services under launchd (ppid 1), never children
+        # of the app -- but AegisForge's own window is one of them.
+        table[HIGH_PID] = FakeProc(HIGH_PID, name, ppid=1)
+        r = api.kill_process(HIGH_PID, CT)
+        assert r["ok"] is False and r["refused"] == "protected"
+        assert api.suspend_process(HIGH_PID, CT)["refused"] == "protected"
+        assert api.quarantine(HIGH_PID, CT)["refused"] == "protected"
