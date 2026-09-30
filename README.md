@@ -542,8 +542,15 @@ the bridge: protected processes are refused, a guarded one (IDE, agent, LLM,
 container, the fleet ...) needs an explicit acknowledgement, cleaning is
 preview-first and Trash-first, nothing auto-runs. Opened in a plain browser tab
 the page is a read-only dashboard and says so. It does not sample on its own --
-it reads what the 60s LaunchAgent sampler wrote. Build it (only needed for the
-app; the CLI never depends on it):
+it reads what the 60s LaunchAgent sampler wrote.
+
+The page is built on one design system (`assets/webui/app.css`): the AegisForge
+brand tokens (ground / mint / ember, the same `C[]` palette the Rich console
+uses) behind a semantic layer, dark by default with a coherent light ramp
+(follows the system, or Auto / Dark / Light from the sidebar), skeleton / empty
+/ error / stale states, keyboard navigation (1-7 jump to a section), a
+phone-width layout with a bottom tab bar, and no font, image or script from the
+network. Build it (only needed for the app; the CLI never depends on it):
 
 ```bash
 pip install -e ".[app]"     # pywebview + rumps + pyobjc, app-only
@@ -606,7 +613,7 @@ macmon_core/
   app_menubar.py         AegisForge.app menu-bar face (rumps, optional): reads the sampler's rows, explicit actions only
   app_webui.py           AegisForge.app reads: loopback server (127.0.0.1, GET only) + the native window
   app_api.py             AegisForge.app actions: the pywebview js_api bridge (every guardrail enforced here)
-assets/webui/            the app page (index.html, app.css, app.js, mark.svg) -- no HTML-string sink
+assets/webui/            the app page (index.html, app.css = the design system, app.js, mark.svg) -- offline, no HTML-string sink
   processes.py           Process manager, sweep, ports
   cleaner.py             System cleaner (junk, browsers, apps)
   gc.py                  Dev garbage collector
