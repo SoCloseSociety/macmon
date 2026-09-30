@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documented -- Full Disk Access for the app
+- Runtime-testing the FROZEN `AegisForge.app` (not just the CLI / the dev server, which inherit the terminal's access) surfaced that a **Disk** analysis of a macOS-protected folder (Documents / Desktop / Downloads) blocks on the TCC gate when the app lacks Full Disk Access -- the walk cannot complete and holds a scanner slot. The build cannot grant TCC, so this is documented (README) and the "scanner busy" message now points at *System Settings > Privacy & Security > Full Disk Access*. Accessible paths (`/usr/local`, `/Applications`, ...) are unaffected, as is the CLI.
+
 ### Fixed -- residual polish
 - A signal / quarantine verdict is no longer flipped by the target's NAME: a process called `error-reporter` (name contains "error") reported a successful kill as failed, and one called `killed-daemon` could report a failure as success. The engine's outcome check now strips the echoed name before looking for its markers (`macmon_core/app_api.py: _outcome`).
 - The app theme toggle only ever persists `dark` / `light` to `localStorage` (an unknown value is dropped, not stored forever).

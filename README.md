@@ -564,6 +564,13 @@ lives in `assets/webui/` (bundled). If pywebview is absent it degrades to a
 menu-bar agent that opens the dashboard in the browser. It is a convenience
 shell -- every safety guarantee above still comes from the one engine.
 
+**Full Disk Access.** Like every macOS disk tool, the app needs Full Disk Access
+to analyze or clean folders macOS protects (Documents, Desktop, Downloads, and
+`~/Library` corners): grant it under *System Settings > Privacy & Security > Full
+Disk Access*. Without it, a **Disk** analysis of a protected folder blocks on the
+macOS TCC gate (the CLI, run from a terminal that already has access, is
+unaffected); accessible paths like `/usr/local` or `/Applications` work either way.
+
 ### Sentinel config
 
 Config lives in `~/.macmon/sentinel.conf` (JSON). Any key you omit falls back to

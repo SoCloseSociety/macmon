@@ -193,7 +193,10 @@ def disk_dict(path: str = "~") -> dict:
     if not base.is_dir():
         return {"error": f"{base} is not a directory", "path": str(base), "entries": [], "total": 0}
     if not _DISK_SEM.acquire(timeout=45):
-        return {"error": "disk scanner busy -- try again", "path": str(base), "entries": [], "total": 0}
+        return {"error": "disk scanner busy -- try again. If it stays stuck on a folder under "
+                         "Documents / Desktop / Downloads, grant AegisForge Full Disk Access "
+                         "(System Settings > Privacy & Security > Full Disk Access).",
+                "path": str(base), "entries": [], "total": 0}
     try:
         entries = disk._disk_entries(base)
     except (OSError, PermissionError) as e:
@@ -218,7 +221,9 @@ def bigfiles_dict(path: str = "~", min_size: str = "50MB") -> dict:
     except Exception:
         return {"error": f"invalid size {min_size!r}", "files": []}
     if not _DISK_SEM.acquire(timeout=45):
-        return {"error": "disk scanner busy -- try again", "files": []}
+        return {"error": "disk scanner busy -- try again. If it stays stuck on a folder under "
+                         "Documents / Desktop / Downloads, grant AegisForge Full Disk Access "
+                         "(System Settings > Privacy & Security > Full Disk Access).", "files": []}
     try:
         files = disk._scan_big_files(base, min_bytes)
     finally:
