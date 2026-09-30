@@ -859,14 +859,42 @@ def _terminate(pid: int) -> bool:
         return False
 
 
-def reap_leaks(leaks: list[dict], cfg: dict, astate: dict, now: float) -> list:
+# Script extensions: a cmdline running one of these under the home directory is
+# very likely a user worker (a scheduler / scan loop / cron script), which may
+# sleep for minutes between runs and is then indistinguishable from a hung leak.
+_SCRIPT_EXTS = (".py", ".pyw", ".js", ".mjs", ".cjs", ".ts", ".sh", ".rb", ".pl")
+
+
+def names_user_script(p: dict) -> bool:
+    """True if the cmdline runs a script FILE under the user's home directory
+    (and not a cache / automation path). A periodic worker -- `nohup python
+    scheduler.py &`, `node cron.mjs` -- wakes only every few minutes and looks
+    exactly like a hung leak while it sleeps, so a bounded idle streak cannot
+    tell them apart. AUTO-reap therefore leaves these to the human (manual
+    `--reap-orphans`); a leaked headless browser (an automation cache path) is
+    still the intended auto target."""
+    hay = (p.get("cmd") or "").replace("\\", "/").lower()
+    home = os.path.expanduser("~").replace("\\", "/").lower()
+    if not hay or not home or home not in hay:
+        return False
+    if any(a in hay for a in _AUTOMATION_PATHS):    # puppeteer/playwright caches: the intended target
+        return False
+    return any(ext in hay for ext in _SCRIPT_EXTS)
+
+
+def reap_leaks(leaks: list[dict], cfg: dict, astate: dict, now: float, auto: bool = True) -> list:
     """Reap proven leaks. Opt-in (`auto_reap_orphans`), cooldown-gated, and
     every candidate is re-validated at signal time. Returns [(key, msg)].
 
     Every list entry here already passed: ppid == 1, dev family, never-touch
     (see observe_table). This adds: family allow-list, not busy, idle streak,
     not in service (no ESTABLISHED connection; for node/python no LISTEN or
-    bound unix socket either; unknown => skip), still leaked NOW, SIGTERM."""
+    bound unix socket either; unknown => skip), still leaked NOW, SIGTERM.
+
+    `auto` (the sampler's default): a leak that runs a user script under the
+    home directory (a possible periodic worker) is SPARED and left for the
+    human, since a bounded idle window cannot prove it is not just sleeping
+    between runs. `manual_reap` passes auto=False (the human confirms each)."""
     if not _bool(cfg, "auto_reap_orphans") or not leaks:
         return []
     if now - float(astate.get("_reap", 0) or 0) < REAP_COOLDOWN:
@@ -875,7 +903,7 @@ def reap_leaks(leaks: list[dict], cfg: dict, astate: dict, now: float) -> list:
     idle_needed = _int(cfg, "reap_idle_samples", 5, lo=1)
     cap = _int(cfg, "reap_max", 40, lo=1)
     streaks = astate.get("leak_streak") or {}
-    reaped = []
+    reaped, spared = [], 0
     for L in leaks:
         if len(reaped) >= cap:
             break
@@ -888,13 +916,25 @@ def reap_leaks(leaks: list[dict], cfg: dict, astate: dict, now: float) -> list:
             continue
         if _in_service(pid, L.get("family")) is not False:
             continue
+        # After the socket check: a leak with NO live/listening socket that still
+        # runs a user script under home is the ambiguous case (a periodic worker
+        # that only sleeps between runs looks identical to a hung leak). AUTO
+        # leaves it for the human; a listening server was already spared above.
+        if auto and names_user_script(L):
+            spared += 1
+            continue
         if not _still_leaked(pid, L["ct"]):
             continue
         if _terminate(pid):
             reaped.append(L)
     if not reaped:
+        if auto and spared:
+            return [("orphan_workers", f"{spared} leaked orphan(s) look like periodic workers (a home script): "
+                                       f"left for review -- 'macmon sentinel --reap-orphans'")]
         return []
     astate["_reap"] = now
     names = Counter((L.get("name") or "?")[:_NAME_W] for L in reaped)
     what = ", ".join(f"{nm} x{c}" if c > 1 else nm for nm, c in names.most_common(4))
-    return [("auto_reap", f"Reaped {len(reaped)} leaked orphan(s) (PID 1, parent exited, idle): {what} -- SIGTERM, graceful")]
+    tail = f"; {spared} script worker(s) spared for manual review" if spared else ""
+    return [("auto_reap", f"Reaped {len(reaped)} leaked orphan(s) (PID 1, parent exited, idle): {what} "
+                          f"-- SIGTERM, graceful{tail}")]

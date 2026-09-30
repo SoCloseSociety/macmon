@@ -1299,7 +1299,7 @@ def manual_reap():
     one_shot = {**cfg, "auto_reap_orphans": True, "reap_idle_samples": 1}
     astate["leak_streak"] = {str(L["pid"]): 1 for L in idle}
     astate.pop("_reap", None)
-    done = aegis.reap_leaks(idle, one_shot, astate, time.time())
+    done = aegis.reap_leaks(idle, one_shot, astate, time.time(), auto=False)  # the human confirmed each one
     if done:
         console.print(Text(done[0][1], style=MINT))
     else:

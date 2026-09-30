@@ -531,6 +531,39 @@ class TestReapInvariants:
         assert len(aegis.reap_leaks(forge["leaks"], cfg, astate, NOW)[0][1]) > 0 and len(sent) == 2
         assert aegis.reap_leaks(forge["leaks"], cfg, astate, NOW + 100) == [] and len(sent) == 2  # cooldown
 
+    def test_names_user_script_classification(self):
+        home = os.path.expanduser("~")
+        assert aegis.names_user_script({"cmd": "python " + os.path.join(home, "proj", "loop.py")}) is True
+        assert aegis.names_user_script({"cmd": "node " + os.path.join(home, "cron.mjs")}) is True
+        # a leaked headless browser under an automation cache path stays the intended auto target
+        assert aegis.names_user_script({"cmd": home + "/.cache/puppeteer/chrome-linux/chrome --headless"}) is False
+        # a script NOT under home is not covered by this home-worker rule
+        assert aegis.names_user_script({"cmd": "python /usr/local/bin/tool.py"}) is False
+        assert aegis.names_user_script({"cmd": "next-server"}) is False
+
+    def test_auto_spares_a_socketless_home_script_worker_but_manual_reaps_it(self, monkeypatch):
+        # The audit scenario: `nohup python scheduler.py &`, terminal closed ->
+        # PID 1, proven-dead parent, no socket, idle between 15-min runs. A bounded
+        # idle streak cannot tell it from a hung leak, so AUTO leaves it for the human.
+        script = os.path.join(os.path.expanduser("~"), "proj", "scheduler.py")
+        leak = {"pid": 5000, "ppid": 1, "name": "python3.12", "cmd": "python " + script,
+                "exe": "python", "ct": 1000.0, "cpu": 0.0, "rss": 0, "user": "neo",
+                "status": "running", "tty": None, "proof": "parent 4000 exited",
+                "busy": False, "family": "python"}
+        cfg = {**CFG, "auto_reap_orphans": True, "reap_idle_samples": 1}
+        sent = []
+        monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append((pid, sig)))
+        monkeypatch.setattr(aegis, "_in_service", lambda pid, fam: False)   # no socket
+        monkeypatch.setattr(aegis, "_still_leaked", lambda pid, ct: True)
+        astate = {"leak_streak": {"5000": 5}}
+        r = aegis.reap_leaks([dict(leak)], cfg, astate, NOW, auto=True)
+        assert sent == [] and r and r[0][0] == "orphan_workers" and "reap-orphans" in r[0][1]
+        assert "_reap" not in astate                        # nothing was signalled
+        # The human confirming (manual --reap-orphans) reaps the very same leak.
+        astate2 = {"leak_streak": {"5000": 5}}
+        r2 = aegis.reap_leaks([dict(leak)], cfg, astate2, NOW, auto=False)
+        assert sent == [(5000, signal.SIGTERM)] and r2 and r2[0][0] == "auto_reap"
+
     def test_swarm_runaway_never_signals_spawner_or_children(self, monkeypatch, no_signals):
         # The "shoot.mjs spawned 24 -> 59 Chrome" incident, auto-reap even ON:
         # a live spawner with live children is a workload. Alert, never kill.
