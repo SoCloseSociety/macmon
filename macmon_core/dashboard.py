@@ -841,7 +841,6 @@ def _action_focus_execute(live):
 
 
 _kill_pending = {"pid": None, "time": 0}
-_KILL_BLACKLIST = {"windowserver", "launchd", "kernel_task", "loginwindow"}
 
 
 def _action_kill_process(live, index):
@@ -852,8 +851,11 @@ def _action_kill_process(live, index):
         return
     proc = _top_procs[index]
     pname = proc["name"] or "?"
-    if pname.lower() in _KILL_BLACKLIST:
-        _set_status(f"Refusing to kill critical process {pname}")
+    # The CLI's blacklist: PID 0/1, this very python (SIGTERMing ourselves
+    # would leave the terminal in cbreak), our parent shell, Finder/Dock/...
+    from .processes import _is_protected_target
+    if _is_protected_target(proc["pid"], pname):
+        _set_status(f"Refusing: protected process {pname} (PID {proc['pid']})")
         return
     now = time.time()
     if _kill_pending["pid"] != proc["pid"] or (now - _kill_pending["time"]) > 5:
@@ -871,13 +873,21 @@ def _action_kill_process(live, index):
 
 # ── Main dashboard loop ─────────────────────────────────────────────────
 
-def run_dashboard(refresh: int = 2):
+def _effective_refresh(refresh, cfg: dict) -> int:
+    """An explicit --refresh wins; otherwise the config's refresh_seconds
+    (which config.py always writes, so it must not shadow the CLI flag)."""
+    if refresh is not None:
+        return max(1, int(refresh))
+    return max(1, int(cfg.get("dashboard", {}).get("refresh_seconds", 2) or 2))
+
+
+def run_dashboard(refresh=None):
     if not sys.stdin.isatty():
         console.print("[red]dashboard requires a TTY[/]")
         return
 
     cfg = load_config()
-    refresh = cfg.get("dashboard", {}).get("refresh_seconds", refresh)
+    refresh = _effective_refresh(refresh, cfg)
     max_procs = cfg.get("dashboard", {}).get("max_processes", 15)
 
     # Initial measurements

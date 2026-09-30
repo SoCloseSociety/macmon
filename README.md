@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/macOS-12%2B-575ECF?style=flat-square&logo=apple&logoColor=white" alt="macOS 12+">
   <img src="https://img.shields.io/badge/Windows%20%7C%20Linux-core-575ECF?style=flat-square" alt="Windows and Linux core support">
   <img src="https://img.shields.io/badge/license-MIT-575ECF?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/modules-18-575ECF?style=flat-square" alt="18 modules">
+  <img src="https://img.shields.io/badge/modules-21-575ECF?style=flat-square" alt="21 modules">
   <img src="https://img.shields.io/badge/commands-30-575ECF?style=flat-square" alt="30 commands">
   <img src="https://img.shields.io/badge/telemetry-none-brightgreen?style=flat-square" alt="No telemetry">
   <img src="https://img.shields.io/badge/cost-$0-brightgreen?style=flat-square" alt="Zero Cost">
@@ -43,7 +43,7 @@
 
 If you have ever searched for *"how to clean my Mac"*, *"free CCleaner alternative for macOS"*, *"free up disk space on Mac"*, *"why is my Mac slow"*, or *"macOS system monitor CLI"* — this is the tool, and it never phones home.
 
-**30 commands** · **18 modules** · **Live dashboard** · **MACMON-SENTINEL always-on watchdog** · **Keyboard shortcuts that execute real actions** · **Autopilot daemon** · **Thermal management** · **Security &amp; malware scanner** · **Docker manager** · **100% local, zero telemetry**
+**30 commands** · **21 modules** · **Live dashboard** · **MACMON-SENTINEL always-on watchdog** · **Keyboard shortcuts that execute real actions** · **Autopilot daemon** · **Thermal management** · **Security &amp; malware scanner** · **Docker manager** · **100% local, zero telemetry**
 
 ### Why developers pick macmon
 
@@ -64,7 +64,7 @@ On other platforms, macOS-only commands degrade gracefully with a clear
 
 This is not a claim -- it is enforced. [CI](.github/workflows/ci.yml) runs on
 **macOS, Ubuntu and Windows** (Python 3.11 and 3.13) on every push: it imports
-all 18 modules, smoke-tests the portable commands, and asserts that every
+all 21 modules, smoke-tests the portable commands, and asserts that every
 macOS-only command exits cleanly with a "requires macOS" notice off-mac.
 
 | Feature | macOS | Windows | Linux |
@@ -86,8 +86,8 @@ cross-platform layer. `clean --browsers` still uses macOS browser-profile paths
 (`~/Library/...`), so it finds nothing on Windows/Linux today.
 
 <sup>2</sup> Core scanning (node_modules, venvs, `__pycache__`, Docker, npm /
-pnpm / yarn / bun) is cross-platform. The pip cache path is macOS-only today, so
-that one category comes back empty elsewhere.
+pnpm / yarn / bun) is cross-platform, and the pip cache is resolved per OS
+(`~/Library/Caches/pip`, `%LOCALAPPDATA%\pip\Cache`, `$XDG_CACHE_HOME/pip`).
 
 On Windows/Linux install by cloning + `pip install -r requirements.txt`, then
 `python macmon.py`. The macOS `install.sh` sets up the `macmon` shortcut on
@@ -485,7 +485,7 @@ All detectors are **on by default and notify-only**:
 |---|---|---|
 | Swap climbing | swap >= `swap_trend_min_gb`, rising >= `swap_slope_gb_min` GB/min, and due to cross `swap_critical_gb` within `swap_eta_min` (before the line -- past it, the absolute alert owns it) | `Swap 5.7 GB, climbing +0.30 GB/min -- reaches the 8 GB critical line in ~8 min at this rate. Biggest RSS: ...` |
 | Memory pressure climbing | same contract on RAM% (`ram_trend_min`, `ram_slope_pct_min`, `ram_eta_min` -> `ram_critical`) | `RAM 84%, climbing +1.5%/min -- hits the 90% critical line in ~4 min` |
-| Load catastrophe | load1 > `load_factor` x logical cores for `load_sustain` consecutive samples | `Load 32.0 on 12 cores (2.7x) for 3 samples -- top CPU: node 312%, ...` |
+| Load catastrophe | load1 > `load_factor` x logical cores for `load_sustain` consecutive samples | `Load 32.0 on 12 cores (2.7x) for 3 samples -- top CPU: node 41%, ...` (CPU% is a share of the whole machine: per-process % divided by logical cores, so 100 = every core busy) |
 | Process swarm | headless browsers (puppeteer / playwright / Chrome for Testing / any browser binary run `--headless`) grow by `swarm_headless_growth` within `swarm_window` samples or exceed `swarm_headless_max`; any other executable grows by `swarm_growth` while >= `swarm_min` | `59 headless browser processes (+35 in 5 min), spawned by node shoot.mjs (pid 4242). Not auto-killed (live workload)` |
 | Leaked orphans | >= `orphan_alert_min` dev processes (headless browsers, node incl. next-server, python) sit under PID 1 **and** their parent is proven dead | `3 leaked dev processes (parent exited, reparented to PID 1, +3 over the window): Google Chrome for Testing x3` |
 
@@ -548,7 +548,7 @@ the default below.
 |---|---|---|
 | `swap_used_gb` | `6.0` | Alert when swap usage exceeds this many GB |
 | `ram_pct` | `92.0` | Alert when RAM usage exceeds this percentage |
-| `proc_cpu` | `95.0` | Alert when a single process exceeds this CPU% (runaway) |
+| `proc_cpu` | `95.0` | Alert when a single process exceeds this share of the whole machine's CPU (per-process % divided by logical cores: 100 = every core busy), i.e. a runaway |
 | `rtt_ms` | `400.0` | Alert when network round-trip time exceeds this |
 | `disk_free_gb` | `15.0` | Alert when free disk space drops below this |
 | `ai_fleet` | `12` | Alert when the AI-agent fleet exceeds this many processes |
@@ -585,6 +585,8 @@ macmon_core/
   dashboard.py           Live TUI (rich) — 12 panels, keyboard shortcuts
   sentinel.py            MACMON-SENTINEL: 60s sampler, alerts, auto-remediation
   aegis.py               AegisForge layer: theme/brand, trend detectors, lineage-proven leak reaper
+  app_menubar.py         AegisForge.app menu-bar face (rumps, optional): reads the sampler's rows, explicit actions only
+  app_webui.py           AegisForge.app window: read-only local status page (127.0.0.1, GET only, pywebview)
   processes.py           Process manager, sweep, ports
   cleaner.py             System cleaner (junk, browsers, apps)
   gc.py                  Dev garbage collector
@@ -630,7 +632,7 @@ Key sections: `dashboard`, `thresholds`, `cleaner`, `privacy`, `gc`, `focus_mode
 git clone https://github.com/SoCloseSociety/macmon
 cd macmon
 pip install -e ".[test]"   # runtime deps + pytest
-pytest -q                  # 123 hermetic tests: no network, no live subprocess
+pytest -q                  # 519 hermetic tests: no network, no live subprocess
 ```
 
 The suite is hermetic (tmp_path + monkeypatch only), so it runs anywhere. CI

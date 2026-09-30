@@ -109,6 +109,32 @@ def show_config():
     console.print(Panel(syntax, title="macmon config", border_style="cyan"))
 
 
+def _render_value(value: str) -> str:
+    """Coerce a --set value to TOML: int -> float -> bool -> array -> quoted
+    string. A `[3000, 5173]` stays an array (so `dev_ports.watch` remains a
+    list, not the string "[3000, 5173]")."""
+    v = value.strip()
+    try:
+        int(v)
+        return v
+    except ValueError:
+        pass
+    try:
+        float(v)
+        return v
+    except ValueError:
+        pass
+    if v.lower() in ("true", "false"):
+        return v.lower()
+    if v.startswith("[") and v.endswith("]"):
+        try:
+            tomllib.loads(f"v = {v}")
+            return v
+        except tomllib.TOMLDecodeError:
+            pass
+    return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def set_config(key: str, value: str):
     if not CONFIG_PATH.exists():
         init_config()
@@ -120,20 +146,7 @@ def set_config(key: str, value: str):
         if stripped.startswith(key) and "=" in stripped:
             k = stripped.split("=")[0].strip()
             if k == key:
-                # Coerce type: int -> float -> bool -> quoted string
-                try:
-                    int(value)
-                    rendered = value.strip()
-                except ValueError:
-                    try:
-                        float(value)
-                        rendered = value.strip()
-                    except ValueError:
-                        if value.lower() in ("true", "false"):
-                            rendered = value.lower()
-                        else:
-                            rendered = f'"{value}"'
-                lines[i] = f"{key} = {rendered}"
+                lines[i] = f"{key} = {_render_value(value)}"
                 found = True
                 break
     if not found:

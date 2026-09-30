@@ -346,10 +346,23 @@ def _plist_label(plist: str) -> str:
     return data.get("Label") or Path(plist).stem
 
 
-def _bootout_cmd(plist: str, label: str) -> list[str]:
+def _service_target(plist: str, label: str) -> str:
     if plist.startswith("/Library/LaunchDaemons/"):
-        return ["sudo", "launchctl", "bootout", f"system/{label}"]
-    return ["launchctl", "bootout", f"gui/{_get_uid()}/{label}"]
+        return f"system/{label}"
+    return f"gui/{_get_uid()}/{label}"
+
+
+def _bootout_cmd(plist: str, label: str) -> list[str]:
+    sudo = ["sudo"] if plist.startswith("/Library/LaunchDaemons/") else []
+    return sudo + ["launchctl", "bootout", _service_target(plist, label)]
+
+
+def _override_cmd(plist: str, label: str, verb: str) -> list[str]:
+    """`launchctl disable|enable <target>` -- the persistent override.
+    bootout alone only unloads for this session: launchd re-bootstraps the
+    plist at the next login, so --disable must also record the override."""
+    sudo = ["sudo"] if plist.startswith("/Library/LaunchDaemons/") else []
+    return sudo + ["launchctl", verb, _service_target(plist, label)]
 
 
 def _disable_item(label: str, force_yes: bool = False):
@@ -361,8 +374,11 @@ def _disable_item(label: str, force_yes: bool = False):
         return
     real_label = _plist_label(plist)
     out, err, rc = run_cmd(_bootout_cmd(plist, real_label), timeout=10)
-    if rc == 0:
+    _, derr, drc = run_cmd(_override_cmd(plist, real_label, "disable"), timeout=10)
+    if rc == 0 or drc == 0:
         console.print(f"[green]Disabled {label}[/]")
+        if drc != 0:
+            console.print(f"[yellow]Persistent disable failed (rc={drc}): {derr.strip()} -- it may come back at next login[/]")
         log_action("startup_disable", label)
     else:
         console.print(f"[yellow]Could not disable {label} (rc={rc}): {err.strip()}[/]")
@@ -373,6 +389,10 @@ def _enable_item(label: str):
     if not plist:
         console.print(f"[yellow]Could not find plist for {label}[/]")
         return
+    real_label = _plist_label(plist)
+    # Clear a persisted `launchctl disable` override first, or bootstrap fails
+    # with "Service is disabled" (EX_CONFIG).
+    run_cmd(_override_cmd(plist, real_label, "enable"), timeout=10)
     if plist.startswith("/Library/LaunchDaemons/"):
         cmd = ["sudo", "launchctl", "bootstrap", "system", plist]
     else:

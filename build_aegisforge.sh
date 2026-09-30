@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# AegisForge.app -- reproducible macOS build (menu-bar .app via PyInstaller).
-# Mirrors the fleet's build_sentinel.sh pattern: --windowed + --icon, an
-# LSUIElement agent (no Dock icon), ad-hoc codesign. NOT the CLI: the public
+# AegisForge.app -- reproducible macOS build (windowed .app via PyInstaller).
+# Mirrors the fleet's build_sentinel.sh pattern: --windowed + --icon, a normal
+# windowed app (Dock icon + native pywebview dashboard window; LSUIElement is
+# stripped in step 4), ad-hoc codesign. NOT the CLI: the public
 # `macmon` CLI stays a plain console tool with no rumps/pyobjc dependency.
 #
 # Usage:

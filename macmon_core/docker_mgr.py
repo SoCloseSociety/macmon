@@ -73,7 +73,27 @@ def run_docker(
     _docker_overview(json_out)
 
 
+def _tsv_rows(out: str, keys: tuple) -> list[dict]:
+    """Rows of a `docker ... --format '{{.A}}\\t{{.B}}'` listing as dicts.
+    Short lines (a field docker left out) are dropped, never mis-keyed."""
+    rows = []
+    for line in (out or "").strip().splitlines():
+        parts = line.split("\t")
+        if len(parts) >= len(keys):
+            rows.append(dict(zip(keys, parts)))
+    return rows
+
+
+_CONTAINER_KEYS = ("id", "name", "image", "status", "ports", "size", "state")
+_IMAGE_KEYS = ("repository", "tag", "id", "size", "created")
+_VOLUME_KEYS = ("name", "driver", "mountpoint")
+_NETWORK_KEYS = ("id", "name", "driver", "scope")
+
+
 def _docker_overview(json_out: bool = False):
+    if json_out:
+        _docker_overview_json()
+        return
     console.print(Panel("[bold blue]macmon docker[/] -- Docker Overview", border_style="blue"))
 
     # System info
@@ -113,13 +133,37 @@ def _docker_overview(json_out: bool = False):
     console.print("\n[dim]Commands: --containers, --images, --volumes, --prune, --stats, --scan[/]")
 
 
-def _list_containers(json_out: bool = False):
-    console.print(Panel("[bold]Docker Containers[/]", border_style="green"))
+def _docker_overview_json():
+    """The overview as one JSON document (no Rich panels on stdout)."""
+    fmt = "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}\t{{.Size}}\t{{.State}}"
+    data = {"disk_usage": [], "running": [], "stopped": [], "dangling_images": 0, "volumes": 0}
+    out, _, rc = run_cmd(["docker", "system", "df", "--format", "{{.Type}}\t{{.TotalCount}}\t{{.Active}}\t{{.Size}}\t{{.Reclaimable}}"], timeout=15)
+    if rc == 0:
+        data["disk_usage"] = _tsv_rows(out, ("type", "total", "active", "size", "reclaimable"))
+    out, _, rc = run_cmd(["docker", "ps", "--format", fmt], timeout=10)
+    if rc == 0:
+        data["running"] = _tsv_rows(out, _CONTAINER_KEYS)
+    out, _, rc = run_cmd(["docker", "ps", "-a", "--filter", "status=exited", "--format", fmt], timeout=10)
+    if rc == 0:
+        data["stopped"] = _tsv_rows(out, _CONTAINER_KEYS)
+    out, _, rc = run_cmd(["docker", "images", "-f", "dangling=true", "-q"], timeout=10)
+    if rc == 0:
+        data["dangling_images"] = len(out.strip().splitlines()) if out.strip() else 0
+    out, _, rc = run_cmd(["docker", "volume", "ls", "-q"], timeout=10)
+    if rc == 0:
+        data["volumes"] = len(out.strip().splitlines()) if out.strip() else 0
+    console.print_json(data=data)
 
+
+def _list_containers(json_out: bool = False):
     out, _, rc = run_cmd([
         "docker", "ps", "-a", "--format",
         "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}\t{{.Size}}\t{{.State}}"
     ], timeout=10)
+    if json_out:
+        console.print_json(data=_tsv_rows(out, _CONTAINER_KEYS) if rc == 0 else [])
+        return
+    console.print(Panel("[bold]Docker Containers[/]", border_style="green"))
     if rc != 0:
         return
 
@@ -146,12 +190,14 @@ def _list_containers(json_out: bool = False):
 
 
 def _list_images(json_out: bool = False):
-    console.print(Panel("[bold]Docker Images[/]", border_style="cyan"))
-
     out, _, rc = run_cmd([
         "docker", "images", "--format",
         "{{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}\t{{.CreatedSince}}"
     ], timeout=10)
+    if json_out:
+        console.print_json(data=_tsv_rows(out, _IMAGE_KEYS) if rc == 0 else [])
+        return
+    console.print(Panel("[bold]Docker Images[/]", border_style="cyan"))
     if rc != 0:
         return
 
@@ -180,12 +226,18 @@ def _list_images(json_out: bool = False):
 
 
 def _list_volumes(json_out: bool = False):
-    console.print(Panel("[bold]Docker Volumes[/]", border_style="magenta"))
-
     out, _, rc = run_cmd([
         "docker", "volume", "ls", "--format",
         "{{.Name}}\t{{.Driver}}\t{{.Mountpoint}}"
     ], timeout=10)
+    if json_out:
+        rows = _tsv_rows(out, _VOLUME_KEYS) if rc == 0 else []
+        used_out, _, _ = run_cmd(["docker", "ps", "-a", "--format", "{{.Mounts}}"], timeout=5)
+        for r in rows:
+            r["in_use"] = r["name"] in (used_out or "")
+        console.print_json(data=rows)
+        return
+    console.print(Panel("[bold]Docker Volumes[/]", border_style="magenta"))
     if rc != 0:
         return
 
@@ -215,12 +267,14 @@ def _list_volumes(json_out: bool = False):
 
 
 def _list_networks(json_out: bool = False):
-    console.print(Panel("[bold]Docker Networks[/]", border_style="blue"))
-
     out, _, rc = run_cmd([
         "docker", "network", "ls", "--format",
         "{{.ID}}\t{{.Name}}\t{{.Driver}}\t{{.Scope}}"
     ], timeout=10)
+    if json_out:
+        console.print_json(data=_tsv_rows(out, _NETWORK_KEYS) if rc == 0 else [])
+        return
+    console.print(Panel("[bold]Docker Networks[/]", border_style="blue"))
     if rc != 0:
         return
 
@@ -323,13 +377,17 @@ def _docker_restart(container: str):
 def _docker_logs(container: str):
     out, err, rc = run_cmd(["docker", "logs", "--tail", "50", container], timeout=10)
     if rc == 0:
-        console.print(Panel(out.strip()[-3000:] if out else "[dim]No logs[/]", title=f"Logs: {container} (last 50)", border_style="dim"))
+        # `docker logs` replays the app's stdout AND stderr on the matching
+        # streams; Python, nginx, node all log to stderr. Show both.
+        text = ((out or "") + (err or "")).strip()
+        console.print(Panel(text[-3000:] if text else "[dim]No logs[/]", title=f"Logs: {container} (last 50)", border_style="dim"))
     else:
         console.print(f"[red]Could not get logs: {err.strip()}[/]")
 
 
 def _list_compose(json_out: bool = False):
-    console.print(Panel("[bold]Docker Compose Projects[/]", border_style="cyan"))
+    if not json_out:
+        console.print(Panel("[bold]Docker Compose Projects[/]", border_style="cyan"))
 
     # Try docker compose ls
     out, _, rc = run_cmd(["docker", "compose", "ls", "--format", "json"], timeout=10)
@@ -353,6 +411,9 @@ def _list_compose(json_out: bool = False):
             return
         if isinstance(projects, dict):
             projects = [projects]
+        if json_out:
+            console.print_json(data=projects)
+            return
 
         table = Table(title="Compose Projects", border_style="cyan")
         table.add_column("Name", width=25)
@@ -368,6 +429,8 @@ def _list_compose(json_out: bool = False):
                 p.get("ConfigFiles", "")[:40],
             )
         console.print(table)
+    elif json_out:
+        console.print_json(data=[])
     else:
         console.print("[dim]No Compose projects found or Docker Compose not available.[/]")
 

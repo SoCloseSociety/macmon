@@ -320,8 +320,14 @@ _USER_APP_PREFIX = ("/applications/",)
 # servers, native hosts, extension helpers). Absolute prefixes on purpose: a
 # project's own `.claude/worktrees/...` checkout is a workspace, not this.
 _HOME_PROTECTED = tuple(
-    f"{os.path.expanduser('~').lower()}/{d}/" for d in (".claude", ".codex", ".cursor", ".vscode", ".ollama", ".macmon")
+    os.path.join(os.path.expanduser("~"), d, "").lower()     # trailing os.sep: ~/.claude/ or ...\.claude\
+    for d in (".claude", ".codex", ".cursor", ".vscode", ".ollama", ".macmon")
 )
+
+
+def _home_protected_name(pref: str) -> str:
+    """'/users/neo/.claude/' or 'c:\\users\\neo\\.claude\\' -> '.claude'."""
+    return os.path.basename(pref.rstrip("/\\").replace("\\", "/"))
 
 
 def _system_path(exe_l: str) -> bool:
@@ -380,7 +386,7 @@ def never_touch(p: dict):
             return f"protected ({pat})"
     for pref in _HOME_PROTECTED:
         if pref in hay:
-            return f"protected (~/{pref.rstrip('/').rsplit('/', 1)[-1]})"
+            return f"protected (~/{_home_protected_name(pref)})"
     exe_l = (p.get("exe") or "").lower()
     if exe_l.startswith(_SYSTEM_EXE_PREFIX):
         return "system path"

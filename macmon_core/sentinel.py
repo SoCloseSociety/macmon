@@ -1012,6 +1012,20 @@ def _sample_cmd() -> list[str]:
     return []
 
 
+def _prefer_pythonw(cmd: list[str]) -> list[str]:
+    """Windows: a schtasks job run with python.exe flashes a console window
+    every minute; the sibling pythonw.exe is the same interpreter without one.
+    Swap it in when it exists; leave any other launcher untouched."""
+    if not cmd:
+        return cmd
+    exe = cmd[0]
+    if os.path.basename(exe).lower() == "python.exe":
+        pyw = os.path.join(os.path.dirname(exe), "pythonw.exe")
+        if os.path.isfile(pyw):
+            return [pyw] + cmd[1:]
+    return cmd
+
+
 def _schedule_install() -> tuple[bool, str]:
     """Register a per-minute sampler with the OS scheduler. Returns (ok, note)."""
     cmd = _sample_cmd()
@@ -1028,7 +1042,7 @@ def _schedule_install() -> tuple[bool, str]:
         r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)], capture_output=True, text=True)
         return (r.returncode == 0, r.stderr.strip())
     if IS_WINDOWS:
-        tr = " ".join(f'"{c}"' for c in cmd)
+        tr = " ".join(f'"{c}"' for c in _prefer_pythonw(cmd))
         r = subprocess.run(["schtasks", "/create", "/tn", _TASK_NAME, "/tr", tr,
                             "/sc", "minute", "/mo", "1", "/f"], capture_output=True, text=True)
         return (r.returncode == 0, r.stderr.strip())

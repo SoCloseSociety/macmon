@@ -35,7 +35,7 @@ jobs:
 
       - name: Import every module
         run: |
-          python -c "import macmon_core.aegis, macmon_core.autopilot, macmon_core.cleaner, macmon_core.config, macmon_core.dashboard, macmon_core.disk, macmon_core.docker_mgr, macmon_core.duplicates, macmon_core.gc, macmon_core.health, macmon_core.network, macmon_core.platform_compat, macmon_core.privacy, macmon_core.processes, macmon_core.security, macmon_core.sentinel, macmon_core.startup, macmon_core.uninstaller, macmon_core.utils; print('all modules import OK')"
+          python -c "import macmon_core.aegis, macmon_core.app_menubar, macmon_core.app_webui, macmon_core.autopilot, macmon_core.cleaner, macmon_core.config, macmon_core.dashboard, macmon_core.disk, macmon_core.docker_mgr, macmon_core.duplicates, macmon_core.gc, macmon_core.health, macmon_core.network, macmon_core.platform_compat, macmon_core.privacy, macmon_core.processes, macmon_core.security, macmon_core.sentinel, macmon_core.startup, macmon_core.uninstaller, macmon_core.utils; print('all modules import OK')"
 
       - name: Platform layer sanity
         run: |

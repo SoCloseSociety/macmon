@@ -41,6 +41,8 @@ env/
 # Internal working notes
 tasks/
 .pytest_cache/
+# Claude Code session data (worktrees, settings) -- never part of the release
+.claude/
 
 # PyInstaller auto-generated spec (build_aegisforge.sh drives via CLI flags)
 AegisForge.spec
