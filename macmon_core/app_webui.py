@@ -155,6 +155,14 @@ def processes_dict(sort_by: str = "cpu") -> dict:
 def security_dict() -> dict:
     from . import security
     from .app_api import engine_call
+    from .platform_compat import require_os
+    # The checks (csrutil / spctl / fdesetup / launchctl / defaults) are macOS
+    # tools: off macOS they all read "could not check" and the tab would show a
+    # confident ~95/100 on a box whose firewall/encryption were never inspected.
+    # Gate it like the CLI (security.run_security) instead of pretending.
+    msg = require_os("macOS")
+    if msg:
+        return {"score": None, "findings": [], "error": msg, "at": time.time()}
     with engine_call():
         score, findings = security._security_checks()
     return {"score": score, "findings": findings, "at": time.time()}
@@ -171,16 +179,27 @@ def docker_dict() -> dict:
             "volumes": docker_mgr._volumes_data(), "at": time.time()}
 
 
+# At most a couple of full-disk walks at once: /api/disk and /api/bigfiles each
+# os.walk a directory tree (seconds to a minute on a large home). Without a bound
+# a page firing dozens of these in parallel would make this app the load; the
+# semaphore serializes them and a caller that cannot get a slot is told to retry.
+_DISK_SEM = threading.BoundedSemaphore(2)
+
+
 def disk_dict(path: str = "~") -> dict:
     from . import disk
     from .utils import format_size
     base = Path(path or "~").expanduser()
     if not base.is_dir():
         return {"error": f"{base} is not a directory", "path": str(base), "entries": [], "total": 0}
+    if not _DISK_SEM.acquire(timeout=45):
+        return {"error": "disk scanner busy -- try again", "path": str(base), "entries": [], "total": 0}
     try:
         entries = disk._disk_entries(base)
     except (OSError, PermissionError) as e:
         return {"error": f"Cannot read {base}: {e.__class__.__name__}", "path": str(base), "entries": [], "total": 0}
+    finally:
+        _DISK_SEM.release()
     total = sum(e["size"] for e in entries)
     for e in entries:
         e["size_label"] = format_size(e["size"])
@@ -198,7 +217,12 @@ def bigfiles_dict(path: str = "~", min_size: str = "50MB") -> dict:
         min_bytes = disk._parse_size(min_size or "50MB")
     except Exception:
         return {"error": f"invalid size {min_size!r}", "files": []}
-    files = disk._scan_big_files(base, min_bytes)
+    if not _DISK_SEM.acquire(timeout=45):
+        return {"error": "disk scanner busy -- try again", "files": []}
+    try:
+        files = disk._scan_big_files(base, min_bytes)
+    finally:
+        _DISK_SEM.release()
     for f in files:
         f["size_label"] = format_size(f["size"])
     return {"path": str(base), "min_bytes": min_bytes, "files": files,
@@ -273,6 +297,18 @@ def host_allowed(host_header) -> bool:
     return hostname in _ALLOWED_HOSTS
 
 
+def fetch_site_allowed(sec_fetch_site) -> bool:
+    """Reject a CROSS-SITE request even when its Host is loopback. A page on
+    another origin can point ``<img src=http://127.0.0.1:PORT/api/bigfiles?...>``
+    at us -- the browser fills a loopback Host, so the Host gate alone passes it
+    (no body is readable, but the walk still runs). A modern browser labels that
+    ``Sec-Fetch-Site: cross-site``; our own page's fetch is ``same-origin`` and a
+    direct navigation is ``none``. A browser that omits the header (old) falls
+    back to the Host gate."""
+    v = (sec_fetch_site or "").strip().lower()
+    return v in ("", "same-origin", "none")
+
+
 def page_html() -> str:
     """The app page (index.html) as text -- what ``/`` serves."""
     return (WEBUI_DIR / "index.html").read_text(encoding="utf-8")
@@ -329,6 +365,9 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not host_allowed(self.headers.get("Host")):
             self._send(403, b"forbidden: loopback host only", "text/plain")
+            return
+        if not fetch_site_allowed(self.headers.get("Sec-Fetch-Site")):
+            self._send(403, b"forbidden: cross-site request", "text/plain")
             return
         path, _, query = self.path.partition("?")
         if path in _STATIC:

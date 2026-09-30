@@ -89,14 +89,21 @@ def _scan_big_files(base: Path, min_bytes: int, file_type: str = None, older: in
     max_results = 200
 
     skip_dirs = {".git", "node_modules", ".venv", "venv", "__pycache__", ".Trash", "Library"}
+    # Absolute mount points to never descend into (aligned with _disk_entries): a
+    # scan of "/" would otherwise hit /proc/kcore (a ~128 TB sparse file), walk
+    # network / Time Machine mounts under /Volumes, and double-walk the data
+    # volume through the /System/Volumes/Data firmlink.
+    skip_abs = {"/proc", "/dev", "/sys", "/Volumes", "/System/Volumes",
+                "/System/Volumes/Data", "/private/var/vm"}
 
     # Bounded min-heap of (size, seq, entry) holding the N largest files
     heap = []
     seq = 0
 
     for root, dirs, files in os.walk(base):
-        # Skip system directories
-        dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".Spotlight")]
+        # Skip system directories (by name) and the dangerous mount points (by path)
+        dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".Spotlight")
+                   and os.path.join(root, d) not in skip_abs]
         for fname in files:
             fpath = Path(root) / fname
             if fpath.is_symlink():

@@ -612,3 +612,66 @@ class TestReadEndpoints:
         with pytest.raises(urllib.error.HTTPError) as e:
             _get(quiet, "api/kill")
         assert e.value.code == 404
+
+
+# ── audit findings: cross-site gate + security OS-gate + disk guards ──────
+class TestCrossSiteGate:
+    @pytest.mark.parametrize("v,ok", [("", True), ("same-origin", True), ("none", True), (None, True),
+                                      ("cross-site", False), ("same-site", False), ("CROSS-SITE", False)])
+    def test_fetch_site_gate(self, v, ok):
+        assert app_webui.fetch_site_allowed(v) is ok
+
+    def test_cross_site_request_is_403_even_with_loopback_host(self, server):
+        # An <img>/fetch from another origin gets a loopback Host filled by the
+        # browser (Host gate passes), but is labelled Sec-Fetch-Site: cross-site.
+        _, port = server
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        try:
+            c.putrequest("GET", "/api/status", skip_host=True)
+            c.putheader("Host", "127.0.0.1:%d" % port)
+            c.putheader("Sec-Fetch-Site", "cross-site")
+            c.endheaders()
+            r = c.getresponse()
+            assert r.status == 403 and "vitals" not in r.read().decode()
+        finally:
+            c.close()
+
+    def test_same_origin_request_still_200(self, server):
+        _, port = server
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        try:
+            c.putrequest("GET", "/api/status", skip_host=True)
+            c.putheader("Host", "127.0.0.1:%d" % port)
+            c.putheader("Sec-Fetch-Site", "same-origin")     # our own page's fetch
+            c.endheaders()
+            r = c.getresponse()
+            assert r.status == 200 and "vitals" in r.read().decode()
+        finally:
+            c.close()
+
+
+class TestSecurityOsGate:
+    def test_security_dict_is_gated_off_macos(self, monkeypatch):
+        from macmon_core import platform_compat
+        monkeypatch.setattr(platform_compat, "require_os", lambda os_name: "macmon security requires macOS")
+        d = app_webui.security_dict()
+        assert d["score"] is None and d["findings"] == [] and "macOS" in d["error"]
+
+    def test_disk_walkers_are_concurrency_bounded(self):
+        # /api/disk and /api/bigfiles share a bounded semaphore so a burst of
+        # requests cannot spawn unbounded full-disk walks.
+        assert isinstance(app_webui._DISK_SEM, type(app_webui.threading.BoundedSemaphore(1)))
+
+
+class TestBigFilesSkipsMountPoints:
+    def test_scan_skips_the_dangerous_absolute_paths(self, monkeypatch):
+        from macmon_core import disk
+        dirs = ["home", "proc", "dev", "Volumes", "System"]   # yielded object; pruned in place
+
+        def fake_walk(base):
+            yield "/", dirs, []                               # only the top level of "/"
+        monkeypatch.setattr(disk.os, "walk", fake_walk)
+        disk._scan_big_files(disk.Path("/"), 1)
+        # /proc, /dev, /Volumes are pruned; /System stays (only /System/Volumes is a mount)
+        assert "home" in dirs and "System" in dirs
+        assert "proc" not in dirs and "dev" not in dirs and "Volumes" not in dirs
