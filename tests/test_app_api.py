@@ -505,6 +505,24 @@ class TestAuditHardening:
         r = api.purge_ram()                              # no_mutation proves processes.purge_ram is never reached
         assert r["ok"] is False and r["refused"] == "os"
 
+    def test_kill_verdict_is_not_flipped_by_a_process_named_error(self, table, api, monkeypatch):
+        table[HIGH_PID] = FakeProc(HIGH_PID, "error-reporter", cmdline=["error-reporter"])
+        monkeypatch.setattr(processes, "kill_process",
+                            lambda target, force_yes=False, **k: processes.console.print("[green]Terminated error-reporter (PID %s)[/]" % target))
+        assert api.kill_process(HIGH_PID, CT)["ok"] is True      # "error" is in the name, not a failure
+
+    def test_kill_still_reports_a_real_engine_error(self, table, api, monkeypatch):
+        table[HIGH_PID] = FakeProc(HIGH_PID, "node", cmdline=["node"])
+        monkeypatch.setattr(processes, "kill_process",
+                            lambda target, force_yes=False, **k: processes.console.print("[red]Error: operation not permitted[/]"))
+        assert api.kill_process(HIGH_PID, CT)["ok"] is False
+
+    def test_quarantine_verdict_is_not_flipped_by_a_process_named_killed(self, table, api, monkeypatch):
+        table[HIGH_PID] = FakeProc(HIGH_PID, "killed-daemon", cmdline=["killed-daemon"])
+        monkeypatch.setattr(security, "_quarantine_process",
+                            lambda target, force_yes=False: security.console.print("[green]Killed killed-daemon (PID %s)[/]" % target))
+        assert api.quarantine(HIGH_PID, CT)["ok"] is True
+
     def test_own_descendant_is_never_signalled(self, table, api, no_mutation):
         me = os.getpid()
         table[me] = FakeProc(me, "AegisForge")

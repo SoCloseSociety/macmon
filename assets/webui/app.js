@@ -96,7 +96,7 @@ function working(text) { return h("div", { class: "working" }, h("span", { class
 function applyTheme(mode) {
   if (mode === "dark" || mode === "light") document.documentElement.dataset.theme = mode; else delete document.documentElement.dataset.theme;
   document.querySelectorAll("#theme-seg button").forEach((b) => b.classList.toggle("is-active", b.dataset.theme === (mode || "system")));
-  try { if (mode && mode !== "system") localStorage.setItem("af.theme", mode); else localStorage.removeItem("af.theme"); } catch (e) { /* private mode */ }
+  try { if (mode === "dark" || mode === "light") localStorage.setItem("af.theme", mode); else localStorage.removeItem("af.theme"); } catch (e) { /* private mode */ }
 }
 $("theme-seg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) applyTheme(b.dataset.theme); });
 try { applyTheme(localStorage.getItem("af.theme") || "system"); } catch (e) { applyTheme("system"); }

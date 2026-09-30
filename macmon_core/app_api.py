@@ -83,6 +83,15 @@ def _last(text: str, default: str = "done") -> str:
     return lines[-1][:240] if lines else default
 
 
+def _outcome(out: str, name: str, want: tuple = (), avoid: tuple = ("error", "no process found")) -> bool:
+    """Did the engine call succeed? The process NAME is echoed in the output
+    (e.g. "Terminated error-reporter (PID 9)"), so a name containing a marker
+    like "error" or "killed" would otherwise flip the verdict. Strip the name
+    first, then require every ``want`` marker present and no ``avoid`` marker."""
+    low = out.lower().replace((name or "").lower(), " ")
+    return all(w in low for w in want) and not any(a in low for a in avoid)
+
+
 def _int(v, default=None):
     try:
         return int(v)
@@ -225,8 +234,7 @@ class Api:
         with engine_call() as cap:
             fn()
         out = cap.get()
-        low = out.lower()
-        ok = not ("error" in low or "no process found" in low)
+        ok = _outcome(out, d["name"])
         return {"ok": ok, "pid": p.pid, "name": d["name"], "verb": verb,
                 "detail": _last(out, f"{verb}: done"), "override": bool(override and reason)}
 
@@ -334,8 +342,8 @@ class Api:
         with engine_call() as cap:
             security._quarantine_process(str(p.pid), force_yes=True)
         out = cap.get()
-        return {"ok": "killed" in out.lower(), "pid": p.pid, "name": d["name"], "lines": _lines(out)[-5:],
-                "detail": _last(out)}
+        return {"ok": _outcome(out, d["name"], want=("killed",), avoid=()), "pid": p.pid, "name": d["name"],
+                "lines": _lines(out)[-5:], "detail": _last(out)}
 
     # ── sentinel ────────────────────────────────────────────────────────
 

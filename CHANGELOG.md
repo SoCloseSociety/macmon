@@ -5,6 +5,12 @@ All notable changes to macmon are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed -- residual polish
+- A signal / quarantine verdict is no longer flipped by the target's NAME: a process called `error-reporter` (name contains "error") reported a successful kill as failed, and one called `killed-daemon` could report a failure as success. The engine's outcome check now strips the echoed name before looking for its markers (`macmon_core/app_api.py: _outcome`).
+- The app theme toggle only ever persists `dark` / `light` to `localStorage` (an unknown value is dropped, not stored forever).
+
 ## [1.5.1] - 2026-09-30
 
 ### Fixed -- second adversarial pass
