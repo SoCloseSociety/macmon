@@ -10,6 +10,10 @@
  * alert line is inert. The test suite asserts no such sink exists in this file.
  *
  * WKWebView (macOS 26) returns js_api results as JSON *strings*: api() parses.
+ *
+ * Design system: see app.css (tokens, components). This file only builds
+ * nodes with the classes the stylesheet defines; icons are inline SVG paths
+ * (currentColor), so there is no image, font or script from the network.
  */
 "use strict";
 
@@ -37,15 +41,44 @@ function show(el, ...kids) { clear(el); for (const k of kids.flat()) if (k != nu
 const NS = "http://www.w3.org/2000/svg";
 function svg(tag, attrs) { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, String(v)); return e; }
 
-// ── icons (inline SVG paths; nav + inline marks) ────────────────────────
+// ── icons (inline SVG paths, 16-unit grid; "mark" is the brand mono mark) ─
 const ICONS = {
-  pulse: "M2 8h3l2-5 3 10 2-5h4", cpu: "M5 5h6v6H5z M2 6h3M2 10h3M11 6h3M11 10h3M6 2v3M10 2v3M6 11v3M10 11v3",
-  broom: "M11 2 7 6 M7 6l3 3 M4 9l3-3 3 3-3 5H4z", shield: "M8 2 13 4v4c0 3-2.5 5-5 6-2.5-1-5-3-5-6V4z",
-  box: "M2 5l6-3 6 3v6l-6 3-6-3z M2 5l6 3 6-3 M8 8v6", disk: "M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z M8 6.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z",
-  ember: "M8 2c1 2 4 3.5 4 7a4 4 0 0 1-8 0c0-2 1-3 1.5-3.5C6 7 7 7.5 7 8.5 7.5 7 8 5 8 2z", check: "M3 8.5l3 3 7-7", x: "M4 4l8 8M12 4l-8 8", eye: "M2 8s2-4 6-4 6 4 6 4-2 4-6 4-6-4-6-4z M8 8m-1.5 0a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0",
+  pulse: "M2 8h3l2-5 3 10 2-5h4",
+  cpu: "M5 5h6v6H5z M2 6h3M2 10h3M11 6h3M11 10h3M6 2v3M10 2v3M6 11v3M10 11v3",
+  broom: "M11 2 7 6 M7 6l3 3 M4 9l3-3 3 3-3 5H4z",
+  shield: "M8 2 13 4v4c0 3-2.5 5-5 6-2.5-1-5-3-5-6V4z",
+  box: "M2 5l6-3 6 3v6l-6 3-6-3z M2 5l6 3 6-3 M8 8v6",
+  disk: "M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z M8 6.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z",
+  ember: "M8 2c1 2 4 3.5 4 7a4 4 0 0 1-8 0c0-2 1-3 1.5-3.5C6 7 7 7.5 7 8.5 7.5 7 8 5 8 2z",
+  check: "M3 8.5l3 3 7-7",
+  x: "M4 4l8 8M12 4l-8 8",
+  eye: "M2 8s2-4 6-4 6 4 6 4-2 4-6 4-6-4-6-4z M8 8m-1.5 0a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0",
+  clock: "M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z M8 5v3l2 1.5",
+  search: "M7 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8z M10 10l3.5 3.5",
+  refresh: "M13 8a5 5 0 1 1-1.5-3.5 M13 2.5v3h-3",
+  zap: "M9 2 4 9h4l-1 5 5-7H8z",
+  lock: "M4 7h8v6H4z M5.5 7V5a2.5 2.5 0 0 1 5 0v2",
+  trash: "M3 4h10 M6 4V2.5h4V4 M5 4l.6 9h4.8L11 4 M7 7v4M9 7v4",
+  folder: "M2 4h4l1.5 1.5H14V13H2z",
+  alert: "M8 2.5 14 13H2z M8 6.5v3 M8 11.2v.3",
+  info: "M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z M8 7.5v4 M8 5v.3",
+  pause: "M5 3v10 M11 3v10",
+  play: "M5 3l8 5-8 5z",
+  external: "M9 3h4v4 M13 3 7 9 M11 9v4H3V5h4",
+  up: "M8 12V4 M4.5 7.5 8 4l3.5 3.5",
+  down: "M8 4v8 M4.5 8.5 8 12l3.5-3.5",
+  flat: "M3 8h10",
+  inbox: "M2 9l2-6h8l2 6v4H2z M2 9h3.5l1 2h3l1-2H14",
+  mark: { box: 48, d: "M24 6 38 11V24C38 32 32 38 24 42 16 38 10 32 10 24V11Z M24 15.5 30.5 19.25V26.75L24 30.5 17.5 26.75V19.25Z M18 34.5H30" },
 };
-function icon(name) { const s = svg("svg", { viewBox: "0 0 16 16" }); s.appendChild(svg("path", { d: ICONS[name] || "" })); return s; }
-document.querySelectorAll(".nav-ico").forEach((el) => el.appendChild(icon(el.dataset.ico)));
+function icon(name) {
+  const def = ICONS[name] || "", d = typeof def === "string" ? def : def.d, box = typeof def === "string" ? 16 : def.box;
+  const s = svg("svg", { viewBox: `0 0 ${box} ${box}`, "aria-hidden": "true", focusable: "false" });
+  s.appendChild(svg("path", { d }));
+  return s;
+}
+function ico(name, cls) { return h("span", { class: "ico" + (cls ? " " + cls : "") }, icon(name)); }
+document.querySelectorAll("[data-ico]").forEach((el) => el.appendChild(icon(el.dataset.ico)));
 
 // ── formatting ──────────────────────────────────────────────────────────
 function fmtBytes(n) { n = Number(n) || 0; const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; } return `${n.toFixed(i ? 1 : 0)} ${u[i]}`; }
@@ -53,12 +86,28 @@ function fmtAge(s) { if (s == null) return "?"; if (s < 60) return `${s}s`; if (
 function num(v, d = 1) { return v == null || Number.isNaN(Number(v)) ? "--" : Number(v).toFixed(d); }
 const SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0, ok: -1 };
 
+// ── shared states: skeleton / empty / error ─────────────────────────────
+function skeleton(n = 3, cls) { return h("div", { class: "skel" + (cls ? " " + cls : ""), "aria-busy": "true", "aria-label": "loading" }, Array.from({ length: n }, () => h("i"))); }
+function emptyState(name, title, hint) { return h("div", { class: "empty" }, ico(name), h("b", null, title), hint ? h("p", null, hint) : null); }
+function errBox(msg, retry) { return h("div", { class: "errbox", role: "alert" }, ico("alert"), h("div", { class: "msg" }, msg), retry ? h("button", { class: "btn btn-xs btn-ghost", type: "button", onclick: retry }, "Retry") : null); }
+function working(text) { return h("div", { class: "working" }, h("span", { class: "spinner", "aria-hidden": "true" }), text); }
+
+// ── theme (follows the system; the sidebar toggle overrides) ────────────
+function applyTheme(mode) {
+  if (mode === "dark" || mode === "light") document.documentElement.dataset.theme = mode; else delete document.documentElement.dataset.theme;
+  document.querySelectorAll("#theme-seg button").forEach((b) => b.classList.toggle("is-active", b.dataset.theme === (mode || "system")));
+  try { if (mode && mode !== "system") localStorage.setItem("af.theme", mode); else localStorage.removeItem("af.theme"); } catch (e) { /* private mode */ }
+}
+$("theme-seg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) applyTheme(b.dataset.theme); });
+try { applyTheme(localStorage.getItem("af.theme") || "system"); } catch (e) { applyTheme("system"); }
+
 // ── the bridge (js_api) ─────────────────────────────────────────────────
 const bridge = { ready: false, checked: false };
 function setBridge(on, why) {
   bridge.ready = on; bridge.checked = true;
   const b = $("bridge"); b.className = "bridge " + (on ? "is-on" : "is-off");
   show(b, h("i"), h("span", null, on ? "bridge: native window" : `bridge: ${why || "read-only tab"}`));
+  document.body.classList.toggle("is-readonly", !on);
   document.querySelectorAll("[data-needs-bridge]").forEach((el) => { el.disabled = !on; el.title = on ? "" : "Actions need the native AegisForge window (this tab is read-only)."; });
 }
 async function api(name, ...args) {
@@ -85,43 +134,85 @@ async function get(path) {
 }
 
 // ── toasts + confirm modal ──────────────────────────────────────────────
+const TOAST_ICON = { ok: "check", bad: "alert", warn: "alert", ember: "ember", info: "info" };
 function toast(msg, kind = "ok", ms = 4200) {
-  const t = h("div", { class: `toast t-${kind}` }, msg);
+  let t;
+  const dismiss = () => { if (!t.isConnected) return; t.classList.add("is-leaving"); setTimeout(() => t.remove(), 200); };
+  t = h("div", { class: `toast t-${kind}` }, ico(TOAST_ICON[kind] || "info"), h("div", { class: "tx" }, msg),
+    h("button", { class: "close", type: "button", "aria-label": "Dismiss", onclick: dismiss }, icon("x")));
   $("toasts").appendChild(t);
-  setTimeout(() => t.remove(), ms);
+  setTimeout(dismiss, ms);
 }
 /** confirm({title, body: [nodes], ok, ack}) -> Promise<{ok, acked}>. With `ack`
- *  the Confirm button stays disabled until the acknowledgement is ticked. */
+ *  the Confirm button stays disabled until the acknowledgement is ticked.
+ *  Focus is trapped inside the dialog and restored to the opener on close;
+ *  Escape and a click on the backdrop cancel (they never confirm). */
 function confirmModal({ title, body, ok = "Confirm", ack = null, danger = true }) {
   return new Promise((resolve) => {
-    const back = $("modal"), okBtn = $("modal-ok"), cancel = $("modal-cancel"), ackRow = $("modal-ack"), ackBox = $("modal-ack-box");
-    show($("modal-title"), title);
+    const back = $("modal"), box = back.firstElementChild, okBtn = $("modal-ok"), cancel = $("modal-cancel"), ackRow = $("modal-ack"), ackBox = $("modal-ack-box");
+    const opener = document.activeElement;
+    show($("modal-title"), ico(danger ? "alert" : "info"), h("span", null, title));
     show($("modal-body"), ...(Array.isArray(body) ? body : [body]));
     okBtn.textContent = ok; okBtn.className = danger ? "btn btn-danger is-solid" : "btn btn-primary";
     ackBox.checked = false;
     if (ack) { show($("modal-ack-text"), ack); ackRow.hidden = false; okBtn.disabled = true; } else { ackRow.hidden = true; okBtn.disabled = false; }
     const onAck = () => { okBtn.disabled = !ackBox.checked; };
-    const done = (v) => { back.hidden = true; okBtn.removeEventListener("click", onOk); cancel.removeEventListener("click", onNo); ackBox.removeEventListener("change", onAck); document.removeEventListener("keydown", onKey); resolve({ ok: v, acked: !!ack && ackBox.checked }); };
+    const focusables = () => [...box.querySelectorAll("button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])")].filter((el) => !el.closest("[hidden]"));
+    const done = (v) => {
+      back.hidden = true;
+      okBtn.removeEventListener("click", onOk); cancel.removeEventListener("click", onNo); ackBox.removeEventListener("change", onAck);
+      document.removeEventListener("keydown", onKey); back.removeEventListener("mousedown", onBack);
+      if (opener && typeof opener.focus === "function") opener.focus();
+      resolve({ ok: v, acked: !!ack && ackBox.checked });
+    };
     const onOk = () => done(true), onNo = () => done(false);
-    const onKey = (e) => { if (e.key === "Escape") done(false); };
-    okBtn.addEventListener("click", onOk); cancel.addEventListener("click", onNo); ackBox.addEventListener("change", onAck); document.addEventListener("keydown", onKey);
+    const onBack = (e) => { if (e.target === back) done(false); };
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); done(false); return; }
+      if (e.key !== "Tab") return;
+      const f = focusables(); if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    okBtn.addEventListener("click", onOk); cancel.addEventListener("click", onNo); ackBox.addEventListener("change", onAck);
+    document.addEventListener("keydown", onKey); back.addEventListener("mousedown", onBack);
     back.hidden = false; (ack ? ackBox : okBtn).focus();
   });
 }
 function kvRows(pairs) { return h("div", { class: "kv" }, pairs.filter((p) => p[1] != null && p[1] !== "").map(([k, v]) => h("div", null, h("span", null, k), h("span", null, String(v))))); }
+function infoLine(text) { return h("div", { class: "info" }, ico("info"), h("span", null, text)); }
 
 // ── navigation ──────────────────────────────────────────────────────────
 const views = {};
+const VIEW_ORDER = ["overview", "processes", "clean", "security", "docker", "disk", "sentinel"];
 let current = "overview";
 function go(name) {
   current = name;
-  document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("is-active", b.dataset.view === name));
+  document.querySelectorAll(".nav-item").forEach((b) => { const on = b.dataset.view === name; b.classList.toggle("is-active", on); if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("is-active", v.dataset.view === name));
   document.querySelector(".content").scrollTop = 0;   // never scrollIntoView: it drags the whole grid
   if (views[name] && views[name].enter) views[name].enter();
   try { localStorage.setItem("af.view", name); } catch (e) { /* private mode */ }
 }
 $("nav").addEventListener("click", (e) => { const b = e.target.closest(".nav-item"); if (b) go(b.dataset.view); });
+$("nav").addEventListener("keydown", (e) => {
+  const items = [...document.querySelectorAll(".nav-item")], i = items.indexOf(document.activeElement);
+  if (i < 0) return;
+  const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+  let j = null;
+  if (step) j = (i + step + items.length) % items.length; else if (e.key === "Home") j = 0; else if (e.key === "End") j = items.length - 1;
+  if (j == null) return;
+  e.preventDefault(); items[j].focus(); go(items[j].dataset.view);
+});
+// 1..7 jump to a section (not while typing, not while a dialog is open)
+document.addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey || !$("modal").hidden) return;
+  const t = e.target, typing = t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+  if (typing) return;
+  const n = parseInt(e.key, 10);
+  if (n >= 1 && n <= VIEW_ORDER.length) go(VIEW_ORDER[n - 1]);
+});
 
 // ── vitals + sparklines (top bar + overview) ────────────────────────────
 const VITALS = { cpu: ["CPU", "%", 100, 1], ram: ["RAM", "%", 100, 1], swap_gb: ["Swap", "GB", 32, 1], load1: ["Load", "", 16, 2], disk_free_gb: ["Disk free", "GB", 512, 0] };
@@ -136,59 +227,82 @@ function tone(id, v) {
 }
 function pct(v, max) { return Math.max(0, Math.min(100, (Number(v) || 0) / max * 100)); }
 function sparkline(vals, tn) {
-  const w = 120, hh = 30, s = svg("svg", { class: "spark " + (tn ? "tone-" + tn : ""), viewBox: `0 0 ${w} ${hh}`, preserveAspectRatio: "none" });
+  const w = 120, hh = 32, s = svg("svg", { class: "spark " + (tn ? "tone-" + tn : ""), viewBox: `0 0 ${w} ${hh}`, preserveAspectRatio: "none", "aria-hidden": "true" });
   const v = vals.filter((x) => x != null && !Number.isNaN(Number(x))).map(Number);
-  if (v.length < 2) return s;
+  if (v.length < 2) return h("div", { class: "spark-empty", "aria-hidden": "true" });
   const lo = Math.min(...v), hi = Math.max(...v), span = hi - lo || 1;
-  const pts = v.map((y, i) => [i / (v.length - 1) * w, hh - 2 - (y - lo) / span * (hh - 6)]);
-  s.appendChild(svg("polygon", { class: "fill", points: [[0, hh], ...pts, [w, hh]].map((p) => p.map((n) => n.toFixed(1)).join(",")).join(" ") }));
-  s.appendChild(svg("polyline", { points: pts.map((p) => p.map((n) => n.toFixed(1)).join(",")).join(" ") }));
+  const pts = v.map((y, i) => [i / (v.length - 1) * w, hh - 3 - (y - lo) / span * (hh - 8)]);
+  const fmt = (p) => p.map((n) => n.toFixed(1)).join(",");
+  s.appendChild(svg("polygon", { class: "fill", points: [[0, hh], ...pts, [w, hh]].map(fmt).join(" ") }));
+  s.appendChild(svg("polyline", { points: pts.map(fmt).join(" ") }));
+  const last = pts[pts.length - 1];
+  s.appendChild(svg("circle", { class: "end", cx: last[0].toFixed(1), cy: last[1].toFixed(1), r: 2.2 }));
   return s;
+}
+/** Direction of a vital over the last few samples: up / down / flat. */
+function trendOf(id, series) {
+  const v = series.filter((x) => x != null && !Number.isNaN(Number(x))).map(Number);
+  if (v.length < 4) return null;
+  const tail = v.slice(-6), a = tail[0], b = tail[tail.length - 1], eps = Math.max(Math.abs(a) * 0.03, id === "cpu" || id === "ram" ? 1 : 0.05);
+  return b - a > eps ? "up" : a - b > eps ? "down" : "flat";
 }
 let history = [];
 function renderVitals(vitals) {
   const grid = clear($("vitals"));
   for (const [id, [label, unit, max, dec]] of Object.entries(VITALS)) {
-    const val = vitals[id], tn = tone(id, val);
-    const bar = h("div", { class: "bar " + (tn ? "tone-" + tn : "") }, h("i", { style: { width: pct(val, max) + "%" } }));
-    grid.appendChild(h("div", { class: "vital" }, h("div", { class: "k" }, label), h("div", { class: "v" }, num(val, dec), unit ? h("small", null, unit) : null), bar, sparkline(history.map((r) => r[id]), tn)));
+    const val = vitals[id], tn = tone(id, val), series = history.map((r) => r[id]), dir = trendOf(id, series);
+    const bar = h("div", { class: "bar " + (tn ? "tone-" + tn : ""), role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": Math.round(pct(val, max)), "aria-label": label }, h("i", { style: { width: pct(val, max) + "%" } }));
+    grid.appendChild(h("div", { class: "vital " + (tn ? "tone-" + tn : "") },
+      h("div", { class: "k" }, h("span", null, label), dir ? ico(dir, "trend-" + dir) : null),
+      h("div", { class: "v" }, num(val, dec), unit ? h("small", null, unit) : null), bar, sparkline(series, tn)));
   }
   const chips = clear($("chips"));
-  for (const [id, [label, unit, , dec]] of Object.entries(VITALS)) chips.appendChild(h("span", { class: "chip" }, label, " ", h("b", null, num(vitals[id], dec) + (unit ? " " + unit : ""))));
+  for (const [id, [label, unit, , dec]] of Object.entries(VITALS)) {
+    const tn = tone(id, vitals[id]);
+    chips.appendChild(h("span", { class: "chip " + (tn ? "tone-" + tn : "tone-ok") }, h("i", { class: "dot" }), label, " ", h("b", null, num(vitals[id], dec) + (unit ? " " + unit : ""))));
+  }
 }
-function findingNode(f) { return h("div", { class: "finding sev-" + f.severity }, h("span", { class: "lvl" }, f.severity), h("span", null, f.text)); }
+function findingNode(f) { return h("div", { class: "finding sev-" + f.severity }, h("span", { class: "lvl" }, f.severity), h("span", { class: "tx" }, f.text)); }
 async function tick() {
-  let d; try { d = await get("/api/status"); } catch (e) { return; }
-  const age = $("age"); age.textContent = d.age_label || ""; age.classList.toggle("is-stale", !!d.stale);
+  let d;
+  try { d = await get("/api/status"); }
+  catch (e) {
+    const age = $("age"); age.lastElementChild.textContent = "engine unreachable"; age.classList.add("is-stale");
+    if ($("findings").querySelector(".skel")) show($("findings"), errBox("status unavailable: " + e.message, tick));
+    if ($("alerts").querySelector(".skel")) clear($("alerts"));
+    return;
+  }
+  const age = $("age"); age.lastElementChild.textContent = d.age_label || ""; age.classList.toggle("is-stale", !!d.stale);
+  document.body.classList.toggle("is-stale", !!d.stale);
   const worst = $("worst"); worst.className = "worst sev-" + (d.worst || "ok");
   show(worst, h("i"), h("span", null, d.worst === "ok" ? "all clear" : `worst: ${d.worst}`));
   renderVitals(d.vitals || {});
   const F = clear($("findings"));
-  if (d.error) F.appendChild(h("div", { class: "finding sev-medium" }, h("span", { class: "lvl" }, "engine"), h("span", null, String(d.error))));
+  if (d.error) F.appendChild(h("div", { class: "finding sev-medium" }, h("span", { class: "lvl" }, "engine"), h("span", { class: "tx" }, String(d.error))));
   if (!d.findings || !d.findings.length) F.appendChild(h("div", { class: "calm" }, icon("check"), "All clear -- forge cold."));
   else for (const f of [...d.findings].sort((a, b) => (SEV_RANK[b.severity] || 0) - (SEV_RANK[a.severity] || 0))) F.appendChild(findingNode(f));
   const A = clear($("alerts"));
-  if (!d.alerts || !d.alerts.length) A.appendChild(h("div", { class: "muted" }, "none"));
+  if (!d.alerts || !d.alerts.length) A.appendChild(emptyState("inbox", "No recent alerts", "The sentinel writes here when a detector fires."));
   else for (const x of d.alerts) A.appendChild(h("div", { class: "alert-line" }, x));
 }
 async function pullHistory() { try { history = (await get("/api/history?n=60")).rows || []; $("forge-note").textContent = history.length ? `${history.length} samples` : ""; } catch (e) { /* keep old */ } }
 function ring(score) {
-  const r = 36, c = 2 * Math.PI * r, tn = score >= 80 ? "" : score >= 50 ? "amber" : "bad";
-  const s = svg("svg", { viewBox: "0 0 86 86" });
-  s.appendChild(svg("circle", { class: "track", cx: 43, cy: 43, r }));
-  s.appendChild(svg("circle", { class: "arc", cx: 43, cy: 43, r, "stroke-dasharray": c.toFixed(1), "stroke-dashoffset": (c * (1 - score / 100)).toFixed(1) }));
-  return h("div", { class: "ring " + (tn ? "tone-" + tn : "") }, s, h("div", { class: "val" }, String(score), h("small", null, "/100")));
+  const r = 38, c = 2 * Math.PI * r, tn = score >= 80 ? "" : score >= 50 ? "amber" : "bad";
+  const s = svg("svg", { viewBox: "0 0 92 92", "aria-hidden": "true" });
+  s.appendChild(svg("circle", { class: "track", cx: 46, cy: 46, r }));
+  s.appendChild(svg("circle", { class: "arc", cx: 46, cy: 46, r, "stroke-dasharray": c.toFixed(1), "stroke-dashoffset": (c * (1 - score / 100)).toFixed(1) }));
+  return h("div", { class: "ring " + (tn ? "tone-" + tn : ""), role: "img", "aria-label": `score ${score} of 100` }, s, h("div", { class: "val" }, String(score), h("small", null, "/100")));
 }
 async function loadHealth(force) {
   const box = $("health");
   if (!force && box.dataset.at && Date.now() - Number(box.dataset.at) < 5 * 60e3) return;
-  show(box, h("div", { class: "working" }, h("span", { class: "spinner" }), "running health checks..."));
+  show(box, h("div", { class: "ring skel-ring", "aria-hidden": "true" }), skeleton(5, "grow"));
   try {
     const d = await get("/api/health"); box.dataset.at = String(Date.now());
     const checks = [...(d.checks || [])].sort((a, b) => ({ fail: 0, warn: 1, pass: 2 }[a.status] ?? 3) - ({ fail: 0, warn: 1, pass: 2 }[b.status] ?? 3));
-    show(box, ring(d.score), h("div", { class: "checks" }, checks.slice(0, 9).map((c) => h("div", { class: "check" }, h("span", { class: "st st-" + c.status }, c.status), h("span", { class: "nm" }, c.name), h("span", { class: "dt" }, c.detail))),
+    show(box, ring(d.score), h("div", { class: "checks" }, checks.slice(0, 9).map((c) => h("div", { class: "check" }, h("span", { class: "st st-" + c.status }, c.status), h("span", { class: "nm" }, c.name), h("span", { class: "dt", title: c.detail }, c.detail))),
       checks.length > 9 ? h("div", { class: "muted", style: { fontSize: "11px" } }, `+${checks.length - 9} more (macmon health)`) : null));
-  } catch (e) { show(box, h("div", { class: "result-bad" }, "health check failed: " + e.message)); }
+  } catch (e) { show(box, errBox("health check failed: " + e.message, () => loadHealth(true))); }
 }
 $("health-refresh").addEventListener("click", () => loadHealth(true));
 views.overview = { enter() { tick(); loadHealth(false); } };
@@ -196,15 +310,16 @@ views.overview = { enter() { tick(); loadHealth(false); } };
 // ── Processes: list + kill / suspend / resume funnels ───────────────────
 const ps = { rows: [], busy: false, timer: null };
 function catBadge(c) { return h("span", { class: "badge " + ({ ide: "badge-sky", llm: "badge-ember", docker: "badge-sky", browser: "" }[c] || "") }, c); }
+function skeletonRows(n, cols) { return Array.from({ length: n }, () => h("tr", { "aria-hidden": "true" }, Array.from({ length: cols }, () => h("td", null, h("span", { class: "skel-line" }))))); }
 function renderProcs() {
   const q = ($("ps-search").value || "").trim().toLowerCase();
   const rows = ps.rows.filter((p) => !q || p.name.toLowerCase().includes(q) || String(p.pid) === q || p.category.includes(q));
   const tb = clear($("ps-rows"));
-  if (!rows.length) { tb.appendChild(h("tr", null, h("td", { colspan: 7, class: "muted" }, ps.rows.length ? "no match" : "no processes"))); return; }
+  if (!rows.length) { tb.appendChild(h("tr", null, h("td", { colspan: 7, class: "cell-empty" }, emptyState("search", ps.rows.length ? "No match" : "No processes", ps.rows.length ? "Try a shorter name, a PID or a category." : null)))); return; }
   for (const p of rows.slice(0, 120)) {
     const stopped = p.status === "stopped";
     const acts = h("td", { class: "actions" });
-    if (p.protected) acts.appendChild(h("span", { class: "badge" }, "protected"));
+    if (p.protected) acts.appendChild(h("span", { class: "badge badge-protected", title: "Never a target: protected by the engine." }, icon("lock"), "protected"));
     else {
       acts.appendChild(h("button", { class: "btn btn-xs btn-ghost", type: "button", disabled: !bridge.ready, onclick: () => signalFunnel(stopped ? "resume" : "suspend", p) }, stopped ? "Resume" : "Suspend"));
       acts.appendChild(h("button", { class: "btn btn-xs btn-danger", type: "button", disabled: !bridge.ready, onclick: () => signalFunnel("kill", p) }, "Kill"));
@@ -219,8 +334,9 @@ function renderProcs() {
 }
 async function loadProcs() {
   if (ps.busy) return; ps.busy = true;
+  if (!ps.rows.length) show($("ps-rows"), skeletonRows(8, 7));
   try { const d = await get("/api/processes?sort=" + encodeURIComponent($("ps-sort").value)); ps.rows = d.processes || []; ps.total = d.total; ps.sort = d.sort; renderProcs(); }
-  catch (e) { show($("ps-rows"), h("tr", null, h("td", { colspan: 7, class: "result-bad" }, "could not list processes: " + e.message))); }
+  catch (e) { show($("ps-rows"), h("tr", null, h("td", { colspan: 7, class: "cell-empty" }, errBox("could not list processes: " + e.message, loadProcs)))); }
   finally { ps.busy = false; }
 }
 $("ps-search").addEventListener("input", renderProcs);
@@ -233,14 +349,16 @@ async function signalFunnel(verb, p) {
   try { g = await api("process_guard", p.pid, p.created); } catch (e) { toast(e.message, "bad"); return; }
   if (!g.ok) { toast(g.detail || "refused", "bad"); loadProcs(); return; }
   const VERB = { kill: ["Kill", "Sends SIGTERM (graceful, never SIGKILL). The process may save state and exit; a stuck one may ignore it."], suspend: ["Suspend", "Sends SIGSTOP: the process freezes (and its windows stop responding) until you Resume it."], resume: ["Resume", "Sends SIGCONT: the process continues where it was frozen."] }[verb];
-  const body = [kvRows([["process", g.name], ["pid", g.pid], ["user", g.user], ["command", g.cmd]]), h("div", { class: "info" }, VERB[1])];
+  const body = [kvRows([["process", g.name], ["pid", g.pid], ["user", g.user], ["command", g.cmd]]), infoLine(VERB[1])];
   if (g.in_service === true) body.push(h("div", { class: "warn" }, "This process (or a child) has an open or listening socket: something may be talking to it right now."));
   if (g.guard) body.push(h("div", { class: "warn" }, `Guarded (${g.guard}): AegisForge would never touch this on its own -- it looks like a live workload, an agent, the fleet or a user app.`));
   const { ok, acked } = await confirmModal({ title: `${VERB[0]} ${g.name} (PID ${g.pid})?`, body, ok: VERB[0], danger: verb !== "resume", ack: g.guard ? "I understand: I am doing this by hand, on a guarded process." : null });
   if (!ok) return;
   toast(`${VERB[0]}ing ${g.name}...`, "warn", 1500);
   try {
-    const r = await api(`${verb}_process`, g.pid, p.created, acked);
+    // (pid, create_time, override): the guard's own "ct" is echoed back so a
+    // recycled PID is refused server-side; override only matters when guarded.
+    const r = await api(`${verb}_process`, g.pid, g.ct != null ? g.ct : p.created, acked);
     toast(r.detail || (r.ok ? "done" : "refused"), r.ok ? (verb === "kill" ? "ember" : "ok") : "bad");
   } catch (e) { toast(e.message, "bad"); }
   setTimeout(loadProcs, 900);
@@ -254,19 +372,27 @@ views.processes = { enter() { loadProcs(); clearInterval(ps.timer); ps.timer = s
 
 // ── Clean: scan -> review -> confirm -> run -> done ─────────────────────
 const clean = { state: "idle", scan: null, picked: new Set(), result: null, error: null };
-function stepper(el, idx, doneAll) { [...el.children].forEach((li, i) => { li.classList.toggle("is-current", i === idx && !doneAll); li.classList.toggle("is-done", i < idx || doneAll); }); }
+function stepper(el, idx, doneAll) {
+  [...el.children].forEach((li, i) => {
+    const cur = i === idx && !doneAll, done = !!(i < idx || doneAll);   // booleans: toggle(name, undefined) would flip
+    li.classList.toggle("is-current", cur); li.classList.toggle("is-done", done);
+    if (cur) li.setAttribute("aria-current", "step"); else li.removeAttribute("aria-current");
+  });
+}
+function roBanner(text) { return h("div", { class: "ro-banner" }, ico("eye"), h("span", null, text)); }
 function renderClean() {
   const st = clear($("clean-stage")); st.className = "card stage";
   const s = clean.state;
   if (s === "idle" || s === "error") {
     stepper($("clean-stepper"), 0);
     st.appendChild(h("div", { class: "stage-hero" }, h("h3", null, "Scan for junk"), h("p", null, "Old logs, crash reports, stale temp files, browser caches (cache + crash reports only -- never cookies, history or logins), app caches and the biggest user caches. The scan touches nothing."),
-      clean.error ? h("div", { class: "result-bad" }, clean.error) : null,
-      h("button", { class: "btn btn-primary", type: "button", onclick: cleanScan }, "Scan")));
-    if (!bridge.ready) st.appendChild(h("div", { class: "ro-banner" }, icon("eye"), "Read-only tab: the clean funnel runs inside the native AegisForge window."));
+      clean.error ? errBox(clean.error) : null,
+      h("button", { class: "btn btn-primary", type: "button", disabled: !bridge.ready, onclick: cleanScan }, ico("search"), "Scan")));
+    if (!bridge.ready) st.appendChild(roBanner("Read-only tab: the clean funnel runs inside the native AegisForge window."));
   } else if (s === "scanning") {
     stepper($("clean-stepper"), 0);
-    st.appendChild(h("div", { class: "working" }, h("span", { class: "spinner" }), "scanning system junk, browser, app and user caches..."));
+    st.appendChild(working("scanning system junk, browser, app and user caches..."));
+    st.appendChild(skeleton(4));
   } else if (s === "review") {
     stepper($("clean-stepper"), 1);
     const cats = clean.scan.categories;
@@ -277,19 +403,19 @@ function renderClean() {
     st.appendChild(picks);
     if (clean.scan.notes && clean.scan.notes.length) st.appendChild(h("div", { class: "notes" }, clean.scan.notes.join("\n")));
     st.appendChild(h("div", { class: "summary" }, h("span", { class: "big" }, fmtBytes(selBytes), h("small", null, `selected in ${sel.length} categor${sel.length === 1 ? "y" : "ies"}`)), h("span", { class: "grow" }),
-      h("button", { class: "btn btn-ghost", type: "button", onclick: () => { clean.picked = new Set(cats.map((c) => c.id)); renderClean(); } }, "All"),
-      h("button", { class: "btn btn-ghost", type: "button", onclick: () => { clean.picked.clear(); renderClean(); } }, "None"),
-      h("button", { class: "btn btn-danger is-solid", type: "button", disabled: !sel.length, onclick: cleanConfirm }, `Clean ${fmtBytes(selBytes)}`)));
+      h("button", { class: "btn btn-ghost btn-sm", type: "button", onclick: () => { clean.picked = new Set(cats.map((c) => c.id)); renderClean(); } }, "All"),
+      h("button", { class: "btn btn-ghost btn-sm", type: "button", onclick: () => { clean.picked.clear(); renderClean(); } }, "None"),
+      h("button", { class: "btn btn-danger is-solid", type: "button", disabled: !sel.length, onclick: cleanConfirm }, ico("trash"), `Clean ${fmtBytes(selBytes)}`)));
   } else if (s === "running") {
     stepper($("clean-stepper"), 2);
-    st.appendChild(h("div", { class: "working" }, h("span", { class: "spinner" }), "moving to the Trash..."));
+    st.appendChild(working("moving to the Trash..."));
   } else if (s === "done") {
     stepper($("clean-stepper"), 3, true);
     const r = clean.result;
     st.appendChild(h("div", { class: "stage-hero" }, h("h3", { class: "result-ok" }, "Cleaned"), h("div", { class: "big" }, `freed ${r.freed_label}`, h("small", null, `${r.cleaned.length} categor${r.cleaned.length === 1 ? "y" : "ies"} -> Trash`)),
-      h("p", null, r.cleaned.join(" · ")), r.skipped ? h("div", { class: "warn muted" }, `${r.skipped} path(s) skipped (Trash refused them; nothing was force-deleted).`) : null,
+      h("p", null, r.cleaned.join(" · ")), r.skipped ? h("div", { class: "warn-line" }, `${r.skipped} path(s) skipped (Trash refused them; nothing was force-deleted).`) : null,
       r.notes && r.notes.length ? h("div", { class: "notes" }, r.notes.join("\n")) : null,
-      h("button", { class: "btn btn-ghost", type: "button", onclick: () => { clean.state = "idle"; clean.scan = null; renderClean(); } }, "Scan again")));
+      h("button", { class: "btn btn-ghost", type: "button", onclick: () => { clean.state = "idle"; clean.scan = null; renderClean(); } }, ico("refresh"), "Scan again")));
   }
 }
 async function cleanScan() {
@@ -300,7 +426,7 @@ async function cleanScan() {
 }
 async function cleanConfirm() {
   const cats = clean.scan.categories.filter((c) => clean.picked.has(c.id)), bytes = cats.reduce((a, c) => a + c.size, 0);
-  const { ok } = await confirmModal({ title: `Move ${fmtBytes(bytes)} to the Trash?`, ok: "Clean", body: [h("p", null, `${cats.length} categor${cats.length === 1 ? "y" : "ies"}: ${cats.map((c) => c.name).join(", ")}.`), h("div", { class: "info" }, "Trash-first: files go to the Trash (recoverable). Anything the Trash refuses is skipped -- never deleted permanently.")] });
+  const { ok } = await confirmModal({ title: `Move ${fmtBytes(bytes)} to the Trash?`, ok: "Clean", body: [h("p", null, `${cats.length} categor${cats.length === 1 ? "y" : "ies"}: ${cats.map((c) => c.name).join(", ")}.`), infoLine("Trash-first: files go to the Trash (recoverable). Anything the Trash refuses is skipped -- never deleted permanently.")] });
   if (!ok) return;
   clean.state = "running"; renderClean();
   try { const r = await api("clean_execute", cats.map((c) => c.id)); if (!r.ok) throw new Error(r.detail || "clean refused"); clean.result = r; clean.state = "done"; toast(`Freed ${r.freed_label}`, "ok"); }
@@ -313,7 +439,7 @@ views.clean = { enter() { renderClean(); } };
 const sec = { busy: false };
 async function secScan() {
   if (sec.busy) return; sec.busy = true; $("sec-scan").disabled = true;
-  show($("sec-result"), h("div", { class: "card" }, h("div", { class: "working" }, h("span", { class: "spinner" }), "firewall, SIP, Gatekeeper, FileVault, connections, remote tools, processes, startup items, sharing, SSH...")));
+  show($("sec-result"), h("div", { class: "card" }, working("firewall, SIP, Gatekeeper, FileVault, connections, remote tools, processes, startup items, sharing, SSH..."), skeleton(5)));
   try {
     const d = await get("/api/security");
     const order = { fail: 0, warn: 1, pass: 2 };
@@ -326,53 +452,64 @@ async function secScan() {
         f.status !== "pass" && f.fix_hint ? h("div", { class: "hint" }, f.fix_hint) : null,
         f.items && f.items.length ? h("ul", null, f.items.slice(0, 12).map((x) => h("li", null, String(x)))) : null)))));
     $("sec-note").textContent = `scanned ${new Date().toLocaleTimeString()}`;
-  } catch (e) { show($("sec-result"), h("div", { class: "card result-bad" }, "scan failed: " + e.message)); }
+  } catch (e) { show($("sec-result"), h("div", { class: "card" }, errBox("scan failed: " + e.message, secScan))); }
   finally { sec.busy = false; $("sec-scan").disabled = false; }
 }
 $("sec-scan").addEventListener("click", secScan);
+$("q-pid").addEventListener("keydown", (e) => { if (e.key === "Enter" && !$("q-go").disabled) $("q-go").click(); });
 $("q-go").addEventListener("click", async () => {
   const pid = parseInt($("q-pid").value, 10);
   if (!pid) { $("q-note").textContent = "enter a PID"; return; }
   let g; try { g = await api("process_guard", pid); } catch (e) { toast(e.message, "bad"); return; }
   if (!g.ok) { $("q-note").textContent = g.detail || "refused"; toast(g.detail || "refused", "bad"); return; }
   const body = [kvRows([["process", g.name], ["pid", g.pid], ["user", g.user], ["command", g.cmd]]), h("div", { class: "warn" }, "Kills the process (SIGTERM, then SIGKILL if it survives 1s) and adds its binary to the application firewall's block list (needs sudo; inbound only). The firewall step reports honestly if sudo needs a password.")];
-  if (g.guard) body.push(h("div", { class: "warn" }, `Guarded (${g.guard}): AegisForge would never touch this on its own.`));
-  const { ok } = await confirmModal({ title: `Quarantine ${g.name} (PID ${g.pid})?`, ok: "Quarantine", body, ack: "I understand this kills the process and blocks its binary." });
+  if (g.guard) body.push(h("div", { class: "warn" }, `Guarded (${g.guard}): AegisForge would never touch this on its own -- it looks like a live workload, an agent, the fleet or a user app.`));
+  // Quarantine escalates (SIGTERM -> SIGKILL + firewall block), so it runs the
+  // same funnel as kill: the acknowledgement is always required, and on a
+  // guarded process it is what the bridge needs as `override`.
+  const { ok, acked } = await confirmModal({ title: `Quarantine ${g.name} (PID ${g.pid})?`, ok: "Quarantine", body,
+    ack: g.guard ? "I understand: I am doing this by hand, on a guarded process -- it will be killed and its binary blocked." : "I understand this kills the process and blocks its binary." });
   if (!ok) return;
-  try { const r = await api("quarantine", g.pid); $("q-note").textContent = r.detail || ""; toast(r.detail || (r.ok ? "quarantined" : "refused"), r.ok ? "ember" : "bad", 6000); if (r.lines) show($("q-note"), h("span", { class: "notes" }, r.lines.join("\n"))); } catch (e) { toast(e.message, "bad"); }
+  try { const r = await api("quarantine", g.pid, g.ct != null ? g.ct : null, !!g.guard && acked); $("q-note").textContent = r.detail || ""; toast(r.detail || (r.ok ? "quarantined" : "refused"), r.ok ? "ember" : "bad", 6000); if (r.lines) show($("q-note"), h("span", { class: "notes" }, r.lines.join("\n"))); } catch (e) { toast(e.message, "bad"); }
 });
 views.security = { enter() { /* on demand: the scan is explicit */ } };
 
 // ── Docker: overview, tabs, guarded prune ───────────────────────────────
 const dk = { data: null, tab: "containers", busy: false };
-function dkTable(cols, rows, cell) {
-  if (!rows.length) return h("div", { class: "pad muted" }, "none");
+function dkTable(cols, rows, cell, emptyTitle) {
+  if (!rows.length) return emptyState("box", emptyTitle || "Nothing here", null);
   return h("table", { class: "table" }, h("thead", null, h("tr", null, cols.map((c) => h("th", { class: c.num ? "num" : "" }, c.label)))), h("tbody", null, rows.map((r) => h("tr", null, cols.map((c) => h("td", { class: (c.num ? "num " : "") + (c.cls ? c.cls(r) : ""), title: String(cell(r, c.key) ?? "") }, cell(r, c.key)))))));
 }
 function renderDocker() {
   const d = dk.data, ov = clear($("dk-overview")), panel = clear($("dk-panel"));
   if (!d) return;
-  if (!d.available) { ov.appendChild(h("div", { class: "stat", style: { gridColumn: "1 / -1" } }, h("div", { class: "k" }, "docker"), h("div", { class: "v muted" }, "not running / not installed"))); $("dk-prune").disabled = true; return; }
+  if (!d.available) { ov.appendChild(h("div", { class: "stat", style: { gridColumn: "1 / -1" } }, h("div", { class: "k" }, "docker"), h("div", { class: "v muted" }, "not running / not installed"))); panel.appendChild(emptyState("box", "Docker is not available", "Start Docker Desktop (or the daemon) and refresh.")); $("dk-prune").disabled = true; return; }
   const o = d.overview || {}, dangling = o.dangling_images || 0;
   [["running", (o.running || []).length], ["stopped", (o.stopped || []).length], ["dangling images", dangling, dangling ? "warm" : ""], ["volumes", o.volumes || 0]].forEach(([k, v, cls]) => ov.appendChild(h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v " + (cls || "") }, String(v)))));
-  $("dk-prune").disabled = !bridge.ready || !dangling; $("dk-prune").textContent = `Prune dangling images${dangling ? ` (${dangling})` : ""}`;
-  document.querySelectorAll("#dk-tabs .tab").forEach((t) => t.classList.toggle("is-active", t.dataset.tab === dk.tab));
+  $("dk-prune").disabled = !bridge.ready || !dangling; show($("dk-prune"), ico("trash"), `Prune dangling images${dangling ? ` (${dangling})` : ""}`);
+  document.querySelectorAll("#dk-tabs .tab").forEach((t) => { const on = t.dataset.tab === dk.tab; t.classList.toggle("is-active", on); t.setAttribute("aria-selected", on ? "true" : "false"); });
   const val = (r, k) => r[k] == null ? "" : String(r[k]);
-  if (dk.tab === "containers") panel.appendChild(dkTable([{ key: "name", label: "Name" }, { key: "image", label: "Image" }, { key: "status", label: "Status", cls: (r) => r.state === "running" ? "result-ok" : r.state === "exited" ? "warm" : "" }, { key: "ports", label: "Ports" }, { key: "size", label: "Size", num: true }], d.containers || [], val));
-  else if (dk.tab === "images") panel.appendChild(dkTable([{ key: "repository", label: "Repository", cls: (r) => r.repository === "<none>" ? "warm" : "" }, { key: "tag", label: "Tag" }, { key: "id", label: "ID" }, { key: "created", label: "Created" }, { key: "size", label: "Size", num: true }], d.images || [], val));
-  else if (dk.tab === "volumes") panel.appendChild(dkTable([{ key: "name", label: "Name" }, { key: "driver", label: "Driver" }, { key: "in_use", label: "In use", cls: (r) => r.in_use ? "result-ok" : "muted" }], d.volumes || [], (r, k) => k === "in_use" ? (r.in_use ? "yes" : "no") : val(r, k)));
-  else panel.appendChild(dkTable([{ key: "type", label: "Type" }, { key: "total", label: "Total", num: true }, { key: "active", label: "Active", num: true }, { key: "size", label: "Size", num: true }, { key: "reclaimable", label: "Reclaimable", num: true }], o.disk_usage || [], val));
+  if (dk.tab === "containers") panel.appendChild(dkTable([{ key: "name", label: "Name" }, { key: "image", label: "Image" }, { key: "status", label: "Status", cls: (r) => r.state === "running" ? "result-ok" : r.state === "exited" ? "warm" : "" }, { key: "ports", label: "Ports" }, { key: "size", label: "Size", num: true }], d.containers || [], val, "No containers"));
+  else if (dk.tab === "images") panel.appendChild(dkTable([{ key: "repository", label: "Repository", cls: (r) => r.repository === "<none>" ? "warm" : "" }, { key: "tag", label: "Tag" }, { key: "id", label: "ID" }, { key: "created", label: "Created" }, { key: "size", label: "Size", num: true }], d.images || [], val, "No images"));
+  else if (dk.tab === "volumes") panel.appendChild(dkTable([{ key: "name", label: "Name" }, { key: "driver", label: "Driver" }, { key: "in_use", label: "In use", cls: (r) => r.in_use ? "result-ok" : "muted" }], d.volumes || [], (r, k) => k === "in_use" ? (r.in_use ? "yes" : "no") : val(r, k), "No volumes"));
+  else panel.appendChild(dkTable([{ key: "type", label: "Type" }, { key: "total", label: "Total", num: true }, { key: "active", label: "Active", num: true }, { key: "size", label: "Size", num: true }, { key: "reclaimable", label: "Reclaimable", num: true }], o.disk_usage || [], val, "No usage data"));
 }
 async function loadDocker() {
   if (dk.busy) return; dk.busy = true;
-  if (!dk.data) show($("dk-panel"), h("div", { class: "pad working" }, h("span", { class: "spinner" }), "asking docker..."));
-  try { dk.data = await get("/api/docker"); renderDocker(); } catch (e) { show($("dk-panel"), h("div", { class: "pad result-bad" }, "docker: " + e.message)); } finally { dk.busy = false; }
+  if (!dk.data) { show($("dk-panel"), h("div", { class: "pad" }, working("asking docker..."), skeleton(4))); }
+  try { dk.data = await get("/api/docker"); renderDocker(); } catch (e) { show($("dk-panel"), h("div", { class: "pad" }, errBox("docker: " + e.message, loadDocker))); } finally { dk.busy = false; }
 }
 $("dk-tabs").addEventListener("click", (e) => { const t = e.target.closest(".tab"); if (t) { dk.tab = t.dataset.tab; renderDocker(); } });
+$("dk-tabs").addEventListener("keydown", (e) => {
+  const tabs = [...document.querySelectorAll("#dk-tabs .tab")], i = tabs.indexOf(document.activeElement);
+  const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+  if (i < 0 || !step) return;
+  e.preventDefault(); const t = tabs[(i + step + tabs.length) % tabs.length]; t.focus(); dk.tab = t.dataset.tab; renderDocker();
+});
 $("dk-refresh").addEventListener("click", loadDocker);
 $("dk-prune").addEventListener("click", async () => {
   const n = (dk.data && dk.data.overview && dk.data.overview.dangling_images) || 0;
-  const { ok } = await confirmModal({ title: `Prune ${n} dangling image${n === 1 ? "" : "s"}?`, ok: "Prune", body: [h("p", null, "Runs ", h("code", null, "docker image prune -f"), " -- dangling (untagged, unreferenced) images only."), h("div", { class: "info" }, "Never -a, never containers, volumes, build cache or networks. Those stay in macmon docker --prune, where you confirm them in the terminal.")] });
+  const { ok } = await confirmModal({ title: `Prune ${n} dangling image${n === 1 ? "" : "s"}?`, ok: "Prune", body: [h("p", null, "Runs ", h("code", null, "docker image prune -f"), " -- dangling (untagged, unreferenced) images only."), infoLine("Never -a, never containers, volumes, build cache or networks. Those stay in macmon docker --prune, where you confirm them in the terminal.")] });
   if (!ok) return;
   $("dk-prune").disabled = true; toast("pruning...", "warn", 1500);
   try { const r = await api("docker_prune_dangling"); toast(r.detail || (r.ok ? "pruned" : "refused"), r.ok ? "ok" : "bad", 6000); } catch (e) { toast(e.message, "bad"); }
@@ -381,35 +518,42 @@ $("dk-prune").addEventListener("click", async () => {
 views.docker = { enter() { loadDocker(); } };
 
 // ── Disk: usage + big files (+ reveal) ──────────────────────────────────
+function diskIdle() {
+  show($("disk-usage"), emptyState("folder", "Analyze a folder", "Sizes every top-level entry of the path (hardlink-aware). A big home folder can take a minute or two -- click Analyze when you want it."));
+  show($("big-files"), emptyState("search", "Find big files", "Scans the same path as Usage (skips Library, node_modules, .git, venvs)."));
+}
 async function loadDisk() {
-  const p = $("disk-path").value.trim() || "~", box = $("disk-usage");
-  show(box, h("div", { class: "working" }, h("span", { class: "spinner" }), `sizing ${p} ...`));
+  const p = $("disk-path").value.trim() || "~", box = $("disk-usage"); $("disk-go").disabled = true;
+  show(box, working(`sizing ${p} ...`), skeleton(6));
   try {
     const d = await get("/api/disk?path=" + encodeURIComponent(p));
-    if (d.error) { show(box, h("div", { class: "result-bad" }, d.error)); return; }
+    if (d.error) { show(box, errBox(d.error)); return; }
+    if (!d.entries.length) { show(box, emptyState("folder", "Empty folder", d.path)); return; }
     const top = Math.max(...d.entries.map((e) => e.size), 1);
     show(box, h("div", { class: "muted", style: { marginBottom: "6px" } }, `${d.path} -- ${d.total_label} in ${d.entries.length} top-level entries`),
       d.entries.map((e) => h("div", { class: "use-row" }, h("span", { class: "nm", title: e.path }, e.name), h("div", { class: "bar " + (e.size > 20 * 1024 ** 3 ? "tone-ember" : e.size > 5 * 1024 ** 3 ? "tone-amber" : "") }, h("i", { style: { width: (e.size / top * 100) + "%" } })), h("span", { class: "sz" }, e.size_label), h("span", { class: "pc" }, `${e.pct}%`))));
-  } catch (e) { show(box, h("div", { class: "result-bad" }, "disk: " + e.message)); }
+  } catch (e) { show(box, errBox("disk: " + e.message, loadDisk)); }
+  finally { $("disk-go").disabled = false; }
 }
 async function loadBig() {
   const p = $("disk-path").value.trim() || "~", box = $("big-files"); $("big-go").disabled = true;
-  show(box, h("div", { class: "pad working" }, h("span", { class: "spinner" }), `walking ${p} for files ${$("big-min").selectedOptions[0].textContent} ... (can take a while on a big home)`));
+  show(box, h("div", { class: "pad" }, working(`walking ${p} for files ${$("big-min").selectedOptions[0].textContent} ... (can take a while on a big home)`), skeleton(5)));
   try {
     const d = await get(`/api/bigfiles?path=${encodeURIComponent(p)}&min=${encodeURIComponent($("big-min").value)}`);
-    if (d.error) { show(box, h("div", { class: "pad result-bad" }, d.error)); return; }
+    if (d.error) { show(box, h("div", { class: "pad" }, errBox(d.error))); return; }
     if (!d.files.length) { show(box, h("div", { class: "pad calm" }, icon("check"), "No file that big under " + d.path)); return; }
     show(box, h("table", { class: "table" }, h("thead", null, h("tr", null, h("th", null, "Path"), h("th", null, "Category"), h("th", null, "Modified"), h("th", { class: "num" }, "Size"), h("th", { class: "actions" }, ""))),
-      h("tbody", null, d.files.map((f) => h("tr", null, h("td", { class: "path", title: f.path }, f.path.replace(/^\/Users\/[^/]+/, "~")), h("td", null, h("span", { class: "badge" }, f.category)), h("td", { class: "muted" }, new Date(f.mtime * 1000).toISOString().slice(0, 10)), h("td", { class: "num" }, f.size_label),
-        h("td", { class: "actions" }, h("button", { class: "btn btn-xs btn-ghost", type: "button", disabled: !bridge.ready, onclick: async () => { try { const r = await api("reveal", f.path); if (!r.ok) toast(r.detail, "bad"); } catch (e) { toast(e.message, "bad"); } } }, "Reveal")))))),
+      h("tbody", null, d.files.map((f) => h("tr", null, h("td", { class: "path", title: f.path }, f.path.replace(/^\/Users\/[^/]+/, "~")), h("td", null, h("span", { class: "badge" }, f.category)), h("td", { class: "muted tnum" }, new Date(f.mtime * 1000).toISOString().slice(0, 10)), h("td", { class: "num" }, f.size_label),
+        h("td", { class: "actions" }, h("button", { class: "btn btn-xs btn-ghost", type: "button", disabled: !bridge.ready, title: "Reveal in Finder", onclick: async () => { try { const r = await api("reveal", f.path); if (!r.ok) toast(r.detail, "bad"); } catch (e) { toast(e.message, "bad"); } } }, ico("external"), "Reveal")))))),
       h("div", { class: "pad muted" }, `${d.files.length} files, ${d.total_label} total. Nothing here deletes -- use Clean, or Finder.`));
-  } catch (e) { show(box, h("div", { class: "pad result-bad" }, "bigfiles: " + e.message)); }
+  } catch (e) { show(box, h("div", { class: "pad" }, errBox("bigfiles: " + e.message, loadBig))); }
   finally { $("big-go").disabled = false; }
 }
 $("disk-go").addEventListener("click", loadDisk);
 $("disk-path").addEventListener("keydown", (e) => { if (e.key === "Enter") loadDisk(); });
 $("big-go").addEventListener("click", loadBig);
 // Both scans are explicit clicks: sizing a big home folder can take minutes.
+diskIdle();
 views.disk = { enter() { /* on demand */ } };
 
 // ── Sentinel: status, trends, detectors, opt-in toggles ─────────────────
@@ -419,11 +563,11 @@ function heading(slope, eta, crit, unit) { if (slope > 0 && eta != null) return 
 function renderSentinel() {
   const d = sn.data; if (!d) return;
   const st = clear($("sn-status"));
-  st.appendChild(h("div", { class: "status-line" }, h("span", { class: "lamp " + (d.sampler_active ? "on" : "off") }), h("b", null, d.sampler_active ? "ACTIVE" : "STOPPED"), h("span", { class: "muted" }, d.sampler_active ? "sampling every 60 s" : "paused -- no new samples, no alerts"), h("span", { class: "grow" }),
-    d.sampler_active ? h("button", { class: "btn btn-warn btn-sm", type: "button", disabled: !bridge.ready, onclick: () => sentinelToggle("pause") }, "Pause") : h("button", { class: "btn btn-primary btn-sm", type: "button", disabled: !bridge.ready, onclick: () => sentinelToggle("resume") }, "Resume")));
+  st.appendChild(h("div", { class: "status-line" }, h("span", { class: "lamp " + (d.sampler_active ? "on" : "off"), "aria-hidden": "true" }), h("b", null, d.sampler_active ? "ACTIVE" : "STOPPED"), h("span", { class: "muted" }, d.sampler_active ? "sampling every 60 s" : "paused -- no new samples, no alerts"), h("span", { class: "grow" }),
+    d.sampler_active ? h("button", { class: "btn btn-warn btn-sm", type: "button", disabled: !bridge.ready, onclick: () => sentinelToggle("pause") }, ico("pause"), "Pause") : h("button", { class: "btn btn-primary btn-sm", type: "button", disabled: !bridge.ready, onclick: () => sentinelToggle("resume") }, ico("play"), "Resume")));
   st.appendChild(kvRows([["weekly health agent", d.weekly_active == null ? "macOS only" : d.weekly_active ? "ACTIVE" : "STOPPED"], ["samples on disk", d.samples], ["metrics", d.metrics_path], ["passwordless purge", d.is_mac ? (d.purge_ready ? "configured" : "not configured (macmon sentinel --setup-purge)") : "macOS only"]]));
   const tr = clear($("sn-trends")), t = d.trends || {};
-  if (!t.points) { tr.appendChild(h("div", { class: "muted" }, "no history yet -- the sampler needs a few minutes")); $("sn-trend-note").textContent = ""; }
+  if (!t.points) { tr.appendChild(emptyState("clock", "No history yet", "The sampler needs a few minutes of samples before a slope means anything.")); $("sn-trend-note").textContent = ""; }
   else {
     $("sn-trend-note").textContent = `slope over ${t.points} pts / ${num(t.span_min, 0)} min`;
     const s = t.swap, r = t.ram, ld = t.load, lk = t.leaks;
@@ -437,16 +581,18 @@ function renderSentinel() {
   show($("sn-detectors"), (d.detectors || []).map((x) => h("div", { class: "det" }, h("span", { class: "nm" }, x.name), h("span", { class: "wh" }, x.what))));
   const au = clear($("sn-auto"));
   for (const [key, on] of Object.entries(d.auto || {})) {
-    const sw = h("button", { class: "switch " + (on ? "is-on" : ""), type: "button", role: "switch", "aria-checked": on ? "true" : "false", disabled: !bridge.ready, onclick: () => autoToggle(key, !on, sw) });
-    au.appendChild(h("div", { class: "switch-row" }, sw, h("div", { class: "sw-text" }, h("div", { class: "sw-lbl" }, d.auto_labels[key] || key), h("div", { class: "sw-key" }, key)), h("span", { class: "chip " + (on ? "chip-ember" : "chip-dim") }, on ? "ON" : "OFF")));
+    const label = d.auto_labels[key] || key;
+    const sw = h("button", { class: "switch " + (on ? "is-on" : ""), type: "button", role: "switch", "aria-checked": on ? "true" : "false", "aria-label": label, disabled: !bridge.ready, onclick: () => autoToggle(key, !on, sw) });
+    au.appendChild(h("div", { class: "switch-row" }, sw, h("div", { class: "sw-text" }, h("div", { class: "sw-lbl" }, label), h("div", { class: "sw-key" }, key)), h("span", { class: "chip " + (on ? "chip-ember" : "chip-dim") }, on ? "ON" : "OFF")));
   }
-  if (!bridge.ready) au.appendChild(h("div", { class: "ro-banner" }, icon("eye"), "Read-only tab: toggles work inside the native AegisForge window (or: macmon sentinel --enable-auto / --disable-auto)."));
+  if (!bridge.ready) au.appendChild(roBanner("Read-only tab: toggles work inside the native AegisForge window (or: macmon sentinel --enable-auto / --disable-auto)."));
   show($("sn-thresholds"), Object.entries(d.thresholds || {}).map(([k, v]) => h("div", null, h("span", null, k), h("span", null, v == null ? "--" : String(v)))));
   $("sn-conf-path").textContent = d.conf_path ? `${d.conf_path} -- read-only here` : "";
 }
 async function loadSentinel() {
   if (sn.busy) return; sn.busy = true;
-  try { sn.data = await get("/api/sentinel"); renderSentinel(); } catch (e) { show($("sn-status"), h("div", { class: "result-bad" }, "sentinel: " + e.message)); } finally { sn.busy = false; }
+  if (!sn.data) { show($("sn-status"), skeleton(4)); show($("sn-trends"), skeleton(5)); show($("sn-detectors"), skeleton(5)); show($("sn-auto"), skeleton(4)); }
+  try { sn.data = await get("/api/sentinel"); renderSentinel(); } catch (e) { show($("sn-status"), errBox("sentinel: " + e.message, loadSentinel)); } finally { sn.busy = false; }
 }
 async function sentinelToggle(verb) {
   const { ok } = await confirmModal({ title: verb === "pause" ? "Pause the sentinel?" : "Resume the sentinel?", ok: verb === "pause" ? "Pause" : "Resume", danger: verb === "pause", body: [h("p", null, verb === "pause" ? "Unloads the 60s sampler LaunchAgent. No new samples, no trend alerts, no auto-remediation until you resume." : "Reinstalls the 60s sampler LaunchAgent.")] });
@@ -462,7 +608,7 @@ const AUTO_WARN = {
 };
 async function autoToggle(key, on, sw) {
   if (on) {
-    const { ok } = await confirmModal({ title: `Enable ${key}?`, ok: "Enable", ack: "I opt in: the sentinel may act on its own under these rules.", body: [h("div", { class: "warn" }, AUTO_WARN[key] || key), h("div", { class: "info" }, "Writes sentinel.conf. Turn it off any time here or with macmon sentinel --disable-auto.")] });
+    const { ok } = await confirmModal({ title: `Enable ${key}?`, ok: "Enable", ack: "I opt in: the sentinel may act on its own under these rules.", body: [h("div", { class: "warn" }, AUTO_WARN[key] || key), infoLine("Writes sentinel.conf. Turn it off any time here or with macmon sentinel --disable-auto.")] });
     if (!ok) return;
   }
   sw.classList.add("is-busy"); sw.disabled = true;
@@ -474,6 +620,8 @@ views.sentinel = { enter() { loadSentinel(); } };
 
 // ── boot ────────────────────────────────────────────────────────────────
 (async function boot() {
+  show($("health"), h("div", { class: "ring skel-ring", "aria-hidden": "true" }), skeleton(5, "grow"));
+  show($("findings"), skeleton(3)); show($("alerts"), skeleton(3));
   await pullHistory(); await tick();
   setInterval(tick, 5000); setInterval(pullHistory, 30000);
   let start = "overview"; try { start = localStorage.getItem("af.view") || "overview"; } catch (e) { /* private mode */ }

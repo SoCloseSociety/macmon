@@ -5,6 +5,20 @@ All notable changes to macmon are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed -- AegisForge.app design system
+- **One palette, three surfaces.** `assets/webui/app.css` is now a real design system: the brand tokens (`--af-*`, verbatim from `macmon_core/aegis.py` `C[]` and the AegisForge brand kit `palette.md`) feed a semantic layer (`--bg/--surface/--border/--text/--muted`, `--accent` mint / `--action` ember, `--sev-ok|info|low|medium|high|critical`, tints), a modular type scale, a 4-based spacing scale, radii, elevation, motion (durations + easings) and z-index tokens. Components only reference semantic tokens, so the Rich console and the app share one palette (the suite asserts every `aegis.C` hex is in the stylesheet).
+- **Dark and light, coherent.** The brand ground is the default; the kit's light ramp (deep mint `#0EA5A0`, cooled ember `#C2410C`) applies under `prefers-color-scheme: light` and can be forced either way from a sidebar Auto / Dark / Light toggle (`data-theme` on `<html>`, remembered in localStorage). `<meta name="color-scheme">`, explicit body background.
+- **Components refined:** sidebar brand lockup + mono eyebrow tagline, nav with key hints (1-7) and the brand mono mark as the Sentinel icon; top bar with severity-tinted worst pill (critical pulses), tone-dotted vital chips, a sample-age pill and a `READ-ONLY` pill when there is no bridge; vitals with a severity top rule, trend arrow, progressbar bar and end-dotted sparklines; health ring with glow; data tables with a `PROTECTED` lock badge; severity / status badges; the funnel stepper with connectors, done ticks and `aria-current="step"`; confirm modal with icon, focus trap, Escape / backdrop cancel and focus restore; toasts with icon and dismiss; ember opt-in switches; primary / ghost / danger / warn buttons with icons and one focus-visible ring everywhere.
+- **States as components:** skeleton (shimmer) loading for every section, table row skeletons, empty states with icon + hint, error boxes with Retry, `body.is-stale` dims the vitals when the sample is old, engine-unreachable is surfaced in the top bar.
+- **Responsive:** icon rail under 860px, bottom tab bar under 640px, 16px gutters, `minmax(0,1fr)` grids and in-card horizontal scroll for tables -- no horizontal page scroll at phone width (verified at 390px, dark and light).
+- **Accessibility + motion:** skip link, labelled sections, sr-only labels on every control, `role="switch"` / `tablist` / `progressbar`, arrow-key navigation in the sidebar and Docker tabs, `prefers-reduced-motion` honoured.
+- **Offline and sink-free, still.** No `@font-face`, `@import`, `url()` or remote reference of any kind (IBM Plex when installed locally, the system UI face otherwise); icons are inline SVG paths on `currentColor`; every node is still built with the text-only `h()` helper (no `innerHTML` anywhere), the CSP is unchanged.
+- **Bridge contract:** every signal echoes `process_guard()`'s `ct` as `(pid, create_time, override)`; quarantine now runs the same guarded-acknowledgement funnel as kill and passes `(pid, ct, override)`.
+- Fixed: the Clean stepper flipped every step to "done" on first render (`classList.toggle(name, undefined)` toggles instead of forcing).
+- Tests: `tests/test_app_design.py` locks the palette mirror, both themes, the offline / no-sink invariants, read-only affordances, a11y hooks, responsive rules and the html / css / js structural contract (every id the script touches exists, every static class it emits is styled). 649 tests.
+
 ## [1.4.0] - 2026-09-30
 
 ### Added -- AegisForge.app is a complete multi-section app
