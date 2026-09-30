@@ -654,11 +654,22 @@ class TestSentinelPrefersPythonw:
 
 
 class TestAegisHomeProtectedIsOsAgnostic:
-    def test_prefixes_use_the_native_separator(self):
-        home = os.path.expanduser("~").lower()
+    def test_prefixes_are_slash_normalized_and_cover_claude(self):
+        # Prefixes are normalized to '/': a Windows cmdline mixes '\' and '/'
+        # (expanduser keeps the tail's '/'), so a native-'\' prefix would miss.
+        home = os.path.expanduser("~").replace("\\", "/").lower()
         for pref in aegis._HOME_PROTECTED:
-            assert pref.startswith(home) and pref.endswith(os.sep)
-        assert any(pref.endswith(os.sep + ".claude" + os.sep) for pref in aegis._HOME_PROTECTED)
+            assert "\\" not in pref
+            assert pref.startswith(home) and pref.endswith("/")
+        assert any(pref.endswith("/.claude/") for pref in aegis._HOME_PROTECTED)
+
+    def test_never_touch_protects_mixed_separator_home_path(self, monkeypatch):
+        # The exact Windows shape that regressed: expanduser("~/.claude/...") ->
+        # 'C:\\Users\\User\\.claude/hooks/x.js' (mixed). Must still be protected.
+        monkeypatch.setattr(aegis, "_ME", "")
+        cmd = "node " + os.path.expanduser("~/.claude/hooks/x.js")
+        p = {"pid": HIGH_PID, "ppid": 1, "name": "node", "cmd": cmd, "exe": "", "user": ""}
+        assert aegis.never_touch(p) == "protected (~/.claude)"
 
     @pytest.mark.parametrize("pref", ["/users/neo/.claude/", "c:\\users\\neo\\.claude\\"])
     def test_reason_names_the_directory_on_both_layouts(self, pref):

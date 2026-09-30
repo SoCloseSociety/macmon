@@ -46,6 +46,12 @@ class FakeProc:
     def name(self): return self._name
     def create_time(self): return self._ct
     def ppid(self): return self._ppid
+
+    def parent(self):
+        try:
+            return psutil.Process(self._ppid)      # resolved via the fake table
+        except psutil.NoSuchProcess:
+            return None
     def cmdline(self): return self._cmdline
     def exe(self): return self._exe
     def username(self): return self._user
@@ -440,6 +446,7 @@ class TestMisc:
         assert seen == [["open", "-R", str(tmp_path)]]
 
     def test_purge_reports_the_engines_last_line(self, api, monkeypatch):
+        monkeypatch.setattr(app_api.sys, "platform", "darwin")   # purge is macOS-only; force the engine path
         monkeypatch.setattr(processes, "purge_ram", lambda: processes.console.print("[red]Purge failed: sudo needs a password[/]"))
         r = api.purge_ram()
         assert r["ok"] is False and "sudo needs a password" in r["detail"]
@@ -450,3 +457,57 @@ class TestMisc:
         assert app_api._lines(cap.get()) == ["hello world"]
         assert app_api._ENGINE_LOCK.acquire(blocking=False)   # released after the block
         app_api._ENGINE_LOCK.release()
+
+
+# ── audit hardening (v1.4.0 adversarial review) ──────────────────────────
+class TestAuditHardening:
+    def test_resume_accepts_the_pages_three_arg_call(self, table, api, monkeypatch):
+        # The page calls kill / suspend / resume with one uniform arity
+        # (pid, create_time, acked); resume must not crash on the 3rd arg.
+        table[HIGH_PID] = FakeProc(HIGH_PID, "node", cmdline=["node", "server.js"])
+        seen = []
+        monkeypatch.setattr(processes, "resume_process", lambda target, **k: seen.append(target))
+        r = api.resume_process(HIGH_PID, CT, False)
+        assert r["ok"] is True and seen == [str(HIGH_PID)]
+
+    def test_quarantine_refuses_a_guarded_process_without_override(self, table, api, no_mutation):
+        table[HIGH_PID] = FakeProc(HIGH_PID, "node", cmdline=["node", os.path.expanduser("~/.claude/hooks/x.js")])
+        r = api.quarantine(HIGH_PID, CT)                 # escalates (SIGKILL + firewall): needs the ack
+        assert r["ok"] is False and r["refused"] == "guarded" and "~/.claude" in r["guard"]
+
+    def test_quarantine_proceeds_on_a_guarded_process_with_override(self, table, api, monkeypatch):
+        table[HIGH_PID] = FakeProc(HIGH_PID, "node", cmdline=["node", os.path.expanduser("~/.claude/hooks/x.js")])
+        seen = {}
+        monkeypatch.setattr(security, "_quarantine_process",
+                            lambda target, force_yes=False: (seen.update(t=target), security.console.print("[green]Killed[/]")))
+        r = api.quarantine(HIGH_PID, CT, override=True)
+        assert r["ok"] is True and seen["t"] == str(HIGH_PID)
+
+    def test_process_guard_returns_create_time(self, table, api, no_mutation):
+        table[HIGH_PID] = FakeProc(HIGH_PID, "node", create_time=CT)
+        g = api.process_guard(HIGH_PID, CT)
+        assert g["ok"] is True and g["ct"] == CT         # the page echoes it back so quarantine gets the identity check
+
+    @pytest.mark.parametrize("off", ["no", "No", "off ", "None", "null", "0.0", "nope", "false", "0", "off"])
+    def test_off_like_strings_never_switch_a_level_on(self, api, monkeypatch, off, tmp_path):
+        monkeypatch.setattr(sentinel, "CONF", tmp_path / "sentinel.conf")
+        monkeypatch.setattr(sentinel, "_purge_nopasswd_ready", lambda: False)
+        r = api.sentinel_set_auto("auto_reap_orphans", off)
+        assert r["on"] is False
+        assert json.loads((tmp_path / "sentinel.conf").read_text()) == {"auto_reap_orphans": False}
+
+    def test_clean_execute_refuses_non_list_ids(self, api, no_mutation):
+        r = api.clean_execute("0,1")                     # a string iterates to {0,1}: reject it outright
+        assert r["ok"] is False and r["refused"] == "bad-input"
+
+    def test_purge_ram_is_macos_only(self, api, no_mutation, monkeypatch):
+        monkeypatch.setattr(app_api.sys, "platform", "win32")
+        r = api.purge_ram()                              # no_mutation proves processes.purge_ram is never reached
+        assert r["ok"] is False and r["refused"] == "os"
+
+    def test_own_process_tree_is_never_signalled(self, table, api, no_mutation):
+        me = os.getpid()
+        table[me] = FakeProc(me, "AegisForge")
+        table[HIGH_PID] = FakeProc(HIGH_PID, "WebContent", ppid=me)   # our own renderer child
+        r = api.kill_process(HIGH_PID, CT)
+        assert r["ok"] is False and r["refused"] == "protected" and "AegisForge itself" in r["detail"]

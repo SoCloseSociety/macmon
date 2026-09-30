@@ -33,6 +33,7 @@ here returns a plain dict; the page ``JSON.parse``s whatever it gets.
 from __future__ import annotations
 
 import contextlib
+import os
 import subprocess
 import sys
 import threading
@@ -115,6 +116,25 @@ def _proc_dict(p: psutil.Process) -> dict:
                 "exe": exe, "user": user, "ct": float(p.create_time() or 0.0)}
 
 
+def _is_own_process_tree(p: psutil.Process) -> bool:
+    """True if p is AegisForge itself or one of its descendants (e.g. the
+    WKWebView renderer / a helper). Signalling those would freeze or kill the
+    app window from under the owner, so they are never a target -- the plain
+    protected set only names PID <= 1 / self / the parent shell / 7 system
+    processes, not our own child render process."""
+    me = os.getpid()
+    try:
+        cur, hops = p, 0
+        while cur is not None and hops < 40:
+            if cur.pid == me:
+                return True
+            cur = cur.parent()
+            hops += 1
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, AttributeError, TypeError):
+        pass   # supplementary guard: never crash the signal path on a walk failure
+    return False
+
+
 class Api:
     """The js_api object. Every public method is callable from the page as
     ``window.pywebview.api.<name>(...)`` and returns a plain dict."""
@@ -147,6 +167,9 @@ class Api:
         if processes._is_protected_target(pid, name):
             return None, None, {"ok": False, "refused": "protected", "pid": pid, "name": name,
                                 "detail": f"{name} (PID {pid}) is protected: never signalled."}
+        if _is_own_process_tree(p):
+            return None, None, {"ok": False, "refused": "protected", "pid": pid, "name": name,
+                                "detail": f"{name} (PID {pid}) is part of AegisForge itself: never signalled."}
         ct = _float(create_time)
         try:
             live_ct = float(p.create_time() or 0.0)
@@ -175,7 +198,7 @@ class Api:
             served = None
         return {"ok": True, "pid": p.pid, "name": d["name"], "protected": False,
                 "guard": reason, "in_service": served, "user": d["user"],
-                "cmd": (d["cmd"] or "")[:200]}
+                "ct": d.get("ct"), "cmd": (d["cmd"] or "")[:200]}
 
     def _signal(self, verb: str, pid, create_time, override) -> dict:
         p, d, err = self._target(pid, create_time)
@@ -203,12 +226,17 @@ class Api:
     def suspend_process(self, pid, create_time=None, override=False) -> dict:
         return self._signal("suspend", pid, create_time, override)
 
-    def resume_process(self, pid, create_time=None) -> dict:
+    def resume_process(self, pid, create_time=None, override=False) -> dict:
+        # `override` is accepted (and ignored) so the page can call kill / suspend
+        # / resume with one uniform arity; resuming is always allowed on a valid,
+        # non-protected target -- there is nothing to acknowledge to un-freeze.
         return self._signal("resume", pid, create_time, True)
 
     def purge_ram(self) -> dict:
         """``sudo -n purge`` -- never prompts; fails fast unless the sudoers
         rule from ``macmon sentinel --setup-purge`` is installed."""
+        if sys.platform != "darwin":
+            return {"ok": False, "refused": "os", "detail": "Purge inactive RAM is macOS only."}
         with engine_call() as cap:
             processes.purge_ram()
         out = cap.get()
@@ -217,39 +245,47 @@ class Api:
     # ── clean (preview -> confirm -> Trash-first execute) ───────────────
 
     def clean_scan(self) -> dict:
-        """Step 1 of the funnel: the itemized preview. Touches nothing."""
-        with engine_call() as cap:
-            results = cleaner._scan_all()
-        self._scan, self._scan_at = results, time.time()
-        cats = []
-        for i, r in enumerate(results):
-            size = int(r.get("size") or 0)
-            if size <= 0:
-                continue
-            cats.append({"id": i, "name": r.get("name", "?"), "size": size, "size_label": format_size(size),
-                         "count": int(r.get("count") or 0)})
-        cats.sort(key=lambda c: c["size"], reverse=True)
-        total = sum(c["size"] for c in cats)
-        return {"ok": True, "categories": cats, "total": total, "total_label": format_size(total),
-                "notes": _lines(cap.get())[:6], "scanned_at": self._scan_at}
+        """Step 1 of the funnel: the itemized preview. Touches nothing.
+        The preview is stored under the engine lock so a concurrent execute
+        cannot read it half-written."""
+        with _ENGINE_LOCK:
+            with console.capture() as cap:
+                results = cleaner._scan_all()
+            self._scan, self._scan_at = results, time.time()
+            cats = []
+            for i, r in enumerate(results):
+                size = int(r.get("size") or 0)
+                if size <= 0:
+                    continue
+                cats.append({"id": i, "name": r.get("name", "?"), "size": size, "size_label": format_size(size),
+                             "count": int(r.get("count") or 0)})
+            cats.sort(key=lambda c: c["size"], reverse=True)
+            total = sum(c["size"] for c in cats)
+            return {"ok": True, "categories": cats, "total": total, "total_label": format_size(total),
+                    "notes": _lines(cap.get())[:6], "scanned_at": self._scan_at}
 
     def clean_execute(self, ids) -> dict:
         """Step 3: clean ONLY the previewed categories the owner ticked.
-        Trash-first (``cleaner._trash_or_rm`` skips, never escalates)."""
-        if not self._scan:
-            return {"ok": False, "refused": "no-scan", "detail": "Scan first: nothing has been previewed."}
-        if time.time() - self._scan_at > SCAN_TTL_S:
+        Trash-first (``cleaner._trash_or_rm`` skips, never escalates). The whole
+        check-and-consume runs under the engine lock, so a preview cannot be
+        executed twice nor wiped by a concurrent scan (a preview runs once)."""
+        if not isinstance(ids, (list, tuple)):
+            return {"ok": False, "refused": "bad-input", "detail": "ids must be a list of category ids."}
+        with _ENGINE_LOCK:
+            if not self._scan:
+                return {"ok": False, "refused": "no-scan", "detail": "Scan first: nothing has been previewed."}
+            if time.time() - self._scan_at > SCAN_TTL_S:
+                self._scan = None
+                return {"ok": False, "refused": "stale", "detail": "The preview is stale (15 min): scan again."}
+            wanted = {_int(i) for i in ids}
+            wanted.discard(None)
+            selected = [r for i, r in enumerate(self._scan) if i in wanted and (r.get("size") or 0) > 0]
+            if not selected:
+                return {"ok": False, "refused": "empty", "detail": "Nothing selected."}
+            with console.capture() as cap:
+                freed = cleaner._execute_clean(selected, permanent=False)
             self._scan = None
-            return {"ok": False, "refused": "stale", "detail": "The preview is stale (15 min): scan again."}
-        wanted = {_int(i) for i in (ids or [])}
-        wanted.discard(None)
-        selected = [r for i, r in enumerate(self._scan) if i in wanted and (r.get("size") or 0) > 0]
-        if not selected:
-            return {"ok": False, "refused": "empty", "detail": "Nothing selected."}
-        with engine_call() as cap:
-            freed = cleaner._execute_clean(selected, permanent=False)
-        self._scan = None   # a preview runs once; the next clean re-scans
-        notes = [ln for ln in _lines(cap.get()) if "skipped" in ln.lower()]
+            notes = [ln for ln in _lines(cap.get()) if "skipped" in ln.lower()]
         return {"ok": True, "freed": int(freed), "freed_label": format_size(int(freed)),
                 "cleaned": [r.get("name") for r in selected], "skipped": len(notes), "notes": notes[:8]}
 
@@ -267,13 +303,23 @@ class Api:
 
     # ── security ────────────────────────────────────────────────────────
 
-    def quarantine(self, pid, create_time=None) -> dict:
+    def quarantine(self, pid, create_time=None, override=False) -> dict:
         """Kill + firewall-block one process (``security._quarantine_process``,
         which refuses the protected set itself; the identity check is ours).
-        The firewall step needs sudo and reports honestly when it cannot."""
+        The firewall step needs sudo and reports honestly when it cannot.
+
+        Quarantine ESCALATES (SIGTERM then SIGKILL + a firewall block), so it
+        holds the same guard as ``kill``: a process the ``never_touch`` set
+        names (fleet sshd, an agent session, an IDE, a container ...) is refused
+        unless the owner acknowledges via ``override``. Pass ``create_time`` so a
+        recycled PID cannot be hit."""
         p, d, err = self._target(pid, create_time)
         if err:
             return err
+        reason = aegis.never_touch(d)
+        if reason and not override:
+            return {"ok": False, "refused": "guarded", "pid": p.pid, "name": d["name"], "guard": reason,
+                    "detail": f"{d['name']} (PID {p.pid}) is guarded ({reason}): acknowledge to quarantine by hand."}
         with engine_call() as cap:
             security._quarantine_process(str(p.pid), force_yes=True)
         out = cap.get()
@@ -298,7 +344,10 @@ class Api:
         own writer). Only the four AUTO_KEYS; everything else is refused."""
         if key not in AUTO_KEYS:
             return {"ok": False, "refused": "key", "detail": f"{key!r} is not a remediation toggle."}
-        on = bool(on) and str(on).lower() not in ("false", "0", "off", "")
+        # Coerce through aegis._bool: a truthy-looking OFF string ("no", "off ",
+        # "None", "0.0") must NOT switch a remediation level ON. False words ->
+        # False, true words -> True, anything unrecognised -> default (off).
+        on = aegis._bool({"v": on}, "v", default=False)
         with engine_call():
             sentinel._write_conf({key: on})
             cfg = sentinel._conf()
@@ -313,7 +362,6 @@ class Api:
         filesystem; spawns Finder, hence a bridge method and not a GET."""
         if sys.platform != "darwin":
             return {"ok": False, "detail": "Reveal in Finder is macOS only."}
-        import os
         path = os.path.expanduser(str(path or ""))
         if not path or not os.path.exists(path):
             return {"ok": False, "detail": "Path does not exist."}
