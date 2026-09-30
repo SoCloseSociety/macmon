@@ -5,6 +5,18 @@ All notable changes to macmon are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-09-30
+
+### Fixed -- second adversarial pass
+
+A second Fable audit confirmed 8 of the v1.5.0 audit fixes real and found two that missed their headline scenario, plus a UI gap and a disk-walk alignment.
+
+- **The app never signals its own WKWebView renderer.** The v1.5.0 own-process-tree guard was a no-op on macOS: `com.apple.WebKit.WebContent` / `.GPU` / `.Networking` are XPC services under launchd (ppid 1), never children of the app, so the ancestry walk never reached them and the Processes tab offered Kill / Suspend on the very process drawing the window. The bridge now refuses the `com.apple.WebKit.*` family outright (`macmon_core/app_api.py`); the CLI can still reach one by PID.
+- **Auto-reap spares a relative-path worker.** `names_user_script` required the home path in the cmdline, but `nohup python scheduler.py &` carries only a relative name -- so the exact audit scenario was still auto-reapable. It now matches a script extension on any argv token via `os.path.splitext` (not a substring, so `.py` no longer matches `.pyenv`, `.sh` `.ssh`, `.rb` `.rbenv`) and does not require the home path.
+- **The Security tab shows the OS-gate message** instead of a `null/100` ring when `security_dict` is gated off macOS (`assets/webui/app.js`).
+- **`_disk_entries` prunes the shared mount set below `/` too** (`SKIP_MOUNTS`, shared with `_scan_big_files`), so `disk("/System")` no longer double-walks the data volume through the `/System/Volumes/Data` firmlink.
+- Enter on the disk-path box respects the in-flight-walk disabled state (no key-repeat scan storm). Suite: 686 tests.
+
 ## [1.5.0] - 2026-09-30
 
 ### Changed -- AegisForge.app design system
@@ -160,7 +172,8 @@ A Fable adversarial audit of the app, verified on real Windows (Python 3.14) and
 ### Added
 - Initial public release: a terminal-native macOS system monitor and cleaner -- 30 commands including a live TUI dashboard, process manager, system cleaner, dev garbage collector, security scanner, Docker manager, disk analyzer, duplicate finder, and an autopilot daemon. 100% local, zero telemetry, MIT licensed.
 
-[Unreleased]: https://github.com/SoCloseSociety/macmon/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/SoCloseSociety/macmon/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/SoCloseSociety/macmon/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/SoCloseSociety/macmon/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/SoCloseSociety/macmon/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/SoCloseSociety/macmon/compare/v1.2.1...v1.3.0

@@ -19,7 +19,7 @@ from rich.console import Console
 # Ensure macmon_core is importable when run as a script from any directory
 sys.path.insert(0, str(Path(__file__).parent))
 
-__version__ = "1.5.0"   # keep in sync with pyproject.toml [project].version
+__version__ = "1.5.1"   # keep in sync with pyproject.toml [project].version
 
 app = typer.Typer(
     name="macmon",
