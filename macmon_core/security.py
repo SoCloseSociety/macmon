@@ -5,6 +5,7 @@ import json
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import psutil
@@ -118,6 +119,39 @@ def run_security(
     _full_security_scan(json_out)
 
 
+# The ten checks, in report order: (narration, probe). Every probe is a
+# read-only, independent subprocess/psutil query, so they run concurrently
+# (see _security_checks); the findings list is assembled in THIS order.
+_CHECK_PLAN = (
+    ("Checking firewall...", lambda: _check_firewall()),
+    ("Checking System Integrity Protection...", lambda: _check_sip()),
+    ("Checking Gatekeeper...", lambda: _check_gatekeeper()),
+    ("Checking FileVault encryption...", lambda: _check_filevault()),
+    ("Scanning network connections...", lambda: _find_suspicious_connections()),
+    ("Scanning for remote access tools...", lambda: _find_remote_tools()),
+    ("Scanning for suspicious processes...", lambda: _find_suspicious_processes()),
+    ("Scanning startup items...", lambda: _find_suspicious_launch_items()),
+    ("Checking sharing services...", lambda: _check_sharing()),
+    ("Checking SSH...", lambda: _check_ssh_security()),
+)
+
+
+def _run_checks(say) -> list:
+    """Run the plan's probes on a thread pool and hand their results back in
+    plan order. ``say(msg)`` is still called once per check, in order, right
+    before that check's result is awaited -- the narration and the output
+    order are byte-identical to the former sequential run, only the wall
+    time drops from the SUM of the probes (~0.7 s, 20+ subprocesses) to the
+    slowest one. A probe that raises re-raises here, at the same position."""
+    with ThreadPoolExecutor(max_workers=len(_CHECK_PLAN), thread_name_prefix="macmon-sec") as pool:
+        futures = [pool.submit(probe) for _, probe in _CHECK_PLAN]
+        results = []
+        for (msg, _), fut in zip(_CHECK_PLAN, futures):
+            say(msg)
+            results.append(fut.result())
+    return results
+
+
 def _security_checks(progress=None) -> tuple[int, list[dict]]:
     """Run the ten checks and score them (100 minus the weighted failures).
     Returns ``(score, findings)``; ``progress(msg)`` is called before each
@@ -126,37 +160,30 @@ def _security_checks(progress=None) -> tuple[int, list[dict]]:
     findings = []
     score = 100
 
+    (fw, sip, gk, fv, sus_conns, remote_tools, sus_procs, sus_launch,
+     sharing, ssh) = _run_checks(say)
+
     # 1. Firewall status
-    say("Checking firewall...")
-    fw = _check_firewall()
     findings.append(fw)
     if fw["status"] == "fail":
         score -= 15
 
     # 2. SIP status
-    say("Checking System Integrity Protection...")
-    sip = _check_sip()
     findings.append(sip)
     if sip["status"] == "fail":
         score -= 20
 
     # 3. Gatekeeper
-    say("Checking Gatekeeper...")
-    gk = _check_gatekeeper()
     findings.append(gk)
     if gk["status"] == "fail":
         score -= 10
 
     # 4. FileVault
-    say("Checking FileVault encryption...")
-    fv = _check_filevault()
     findings.append(fv)
     if fv["status"] == "fail":
         score -= 15
 
     # 5. Suspicious connections
-    say("Scanning network connections...")
-    sus_conns = _find_suspicious_connections()
     if sus_conns:
         findings.append({
             "name": "Suspicious Connections",
@@ -169,8 +196,6 @@ def _security_checks(progress=None) -> tuple[int, list[dict]]:
         findings.append({"name": "Suspicious Connections", "status": "pass", "detail": "No suspicious connections"})
 
     # 6. Remote access tools
-    say("Scanning for remote access tools...")
-    remote_tools = _find_remote_tools()
     if remote_tools:
         findings.append({
             "name": "Remote Access Tools",
@@ -183,8 +208,6 @@ def _security_checks(progress=None) -> tuple[int, list[dict]]:
         findings.append({"name": "Remote Access Tools", "status": "pass", "detail": "None running"})
 
     # 7. Suspicious processes
-    say("Scanning for suspicious processes...")
-    sus_procs = _find_suspicious_processes()
     if sus_procs:
         findings.append({
             "name": "Suspicious Processes",
@@ -197,8 +220,6 @@ def _security_checks(progress=None) -> tuple[int, list[dict]]:
         findings.append({"name": "Suspicious Processes", "status": "pass", "detail": "None found"})
 
     # 8. Suspicious LaunchAgents/Daemons
-    say("Scanning startup items...")
-    sus_launch = _find_suspicious_launch_items()
     if sus_launch:
         findings.append({
             "name": "Suspicious Startup Items",
@@ -211,15 +232,11 @@ def _security_checks(progress=None) -> tuple[int, list[dict]]:
         findings.append({"name": "Suspicious Startup Items", "status": "pass", "detail": "None found"})
 
     # 9. Open sharing services
-    say("Checking sharing services...")
-    sharing = _check_sharing()
     findings.append(sharing)
     if sharing["status"] == "warn":
         score -= 5
 
     # 10. SSH check
-    say("Checking SSH...")
-    ssh = _check_ssh_security()
     findings.append(ssh)
     if ssh["status"] == "warn":
         score -= 5
@@ -434,12 +451,13 @@ def _find_suspicious_connections() -> list[str]:
 
 def _find_remote_tools() -> list[str]:
     found = []
-    for p in psutil.process_iter(["pid", "name"]):
+    for p in psutil.process_iter(["pid", "name", "memory_info"]):
         try:
             pname = p.info["name"].lower()
             for tool in KNOWN_REMOTE_TOOLS:
                 if tool in pname:
-                    ram = p.memory_info().rss if p.memory_info() else 0
+                    mem = p.info.get("memory_info")
+                    ram = mem.rss if mem else 0
                     found.append(f"PID {p.info['pid']}: {p.info['name']} ({format_size(ram)})")
                     break
         except (psutil.NoSuchProcess, psutil.AccessDenied):

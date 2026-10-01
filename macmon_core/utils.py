@@ -1,7 +1,9 @@
 """Shared utilities for macmon."""
 
 import logging
+import os
 import sqlite3
+import stat
 import subprocess
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -136,6 +138,7 @@ def send_notification(title: str, message: str, style: str = "osascript"):
                 ],
                 capture_output=True,
                 timeout=5,
+                stdin=subprocess.DEVNULL,
             )
         except Exception:
             pass
@@ -145,6 +148,7 @@ def send_notification(title: str, message: str, style: str = "osascript"):
                 ["terminal-notifier", "-title", title, "-message", message],
                 capture_output=True,
                 timeout=5,
+                stdin=subprocess.DEVNULL,
             )
         except Exception:
             pass
@@ -154,11 +158,29 @@ def log_action(action: str, details: str = ""):
     logger.info(f"{action}: {details}" if details else action)
 
 
-def run_cmd(cmd: list[str], sudo: bool = False, timeout: int = 30) -> tuple[str, str, int]:
-    if sudo:
+def _sudo_argv(cmd: list[str], sudo: bool) -> list[str]:
+    """argv for a (possibly) privileged command. Every sudo invocation --
+    ``sudo=True`` or an explicit ``"sudo"`` argv[0] -- carries ``-n``: with no
+    cached credentials it fails at once ("a password is required") instead of
+    blocking a windowed app or a scheduled job on a prompt nobody can see."""
+    cmd = list(cmd)
+    if sudo and cmd[:1] != ["sudo"]:
         cmd = ["sudo"] + cmd
+    if cmd[:1] == ["sudo"] and cmd[1:2] != ["-n"]:
+        cmd.insert(1, "-n")
+    return cmd
+
+
+def run_cmd(cmd: list[str], sudo: bool = False, timeout: int = 30) -> tuple[str, str, int]:
+    """Run ``cmd`` (an argv list, never a shell) -> (stdout, stderr, rc).
+
+    Never interactive: stdin is /dev/null (a child inheriting a closed or
+    windowed stdin can block on a read forever) and sudo is always ``sudo -n``
+    (see ``_sudo_argv``). rc -1 = timed out, -2 = executable not found."""
+    cmd = _sudo_argv(cmd, sudo)
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                                stdin=subprocess.DEVNULL)
         return result.stdout, result.stderr, result.returncode
     except subprocess.TimeoutExpired:
         return "", "Command timed out", -1
@@ -167,21 +189,33 @@ def run_cmd(cmd: list[str], sudo: bool = False, timeout: int = 30) -> tuple[str,
 
 
 def dir_size(path: Path) -> int:
+    """Total bytes of the regular files under ``path``.
+
+    One ``lstat`` per entry (``os.walk`` + ``S_ISREG``): the previous
+    ``rglob`` + ``is_file()`` + ``is_symlink()`` + ``stat()`` form cost up to
+    three stat calls per file -- a warm, alternating A/B on a static 170 MB
+    venv tree (12k files) runs 160 ms -> 79 ms on 3.14 and 163 -> 77 ms on
+    3.13; a 10 GB cache tree is I/O-bound and gains little. Same semantics:
+    symlinks are neither followed nor counted (``os.walk`` does not descend a
+    symlinked directory; a symlink to a file is not ``S_ISREG``), hardlinked
+    files count once, unreadable subtrees are skipped."""
     total = 0
     seen_links: set[tuple[int, int]] = set()  # count hardlinked files once
     try:
-        for entry in path.rglob("*"):
-            if entry.is_file() and not entry.is_symlink():
+        for root, _dirs, files in os.walk(path):
+            for fname in files:
                 try:
-                    st = entry.stat()
-                    if st.st_nlink > 1:
-                        key = (st.st_dev, st.st_ino)
-                        if key in seen_links:
-                            continue
-                        seen_links.add(key)
-                    total += st.st_size
-                except (OSError, PermissionError):
-                    pass
+                    st = os.lstat(os.path.join(root, fname))
+                except OSError:
+                    continue
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+                if st.st_nlink > 1:
+                    key = (st.st_dev, st.st_ino)
+                    if key in seen_links:
+                        continue
+                    seen_links.add(key)
+                total += st.st_size
     except (OSError, PermissionError):
         pass
     return total

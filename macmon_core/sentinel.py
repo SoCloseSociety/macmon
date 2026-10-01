@@ -27,6 +27,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape
 
 import psutil
 from rich.align import Align
@@ -130,6 +131,17 @@ def _conf() -> dict:
     return cfg
 
 
+def _run(cmd: list[str], timeout: float = 15, text: bool = True, input=None, **kw):
+    """subprocess.run for the scheduler / notifier plumbing: output captured,
+    always time-bounded, and stdin is /dev/null unless ``input`` is given (a
+    child inheriting the app's windowed or closed stdin can block forever)."""
+    if input is None:
+        kw["stdin"] = subprocess.DEVNULL
+    else:
+        kw["input"] = input
+    return subprocess.run(cmd, capture_output=True, text=text, timeout=timeout, **kw)
+
+
 # ── Collector (single shot) ──────────────────────────────────────────────
 
 _NOTIFIER_SCRIPT = '''on deliver()
@@ -185,7 +197,7 @@ def _build_notifier():
         with tempfile.NamedTemporaryFile("w", suffix=".applescript", delete=False) as f:
             f.write(_NOTIFIER_SCRIPT)
             src = f.name
-        r = subprocess.run(["osacompile", "-o", str(NOTIFIER_APP), src], capture_output=True, timeout=30)
+        r = _run(["osacompile", "-o", str(NOTIFIER_APP), src], timeout=30, text=False)
         os.unlink(src)
         if r.returncode != 0:
             return False
@@ -194,9 +206,9 @@ def _build_notifier():
 
         def _plist_set(key, value, typ="string"):
             # osacompile applets lack some keys, so Set alone fails -> Add fallback
-            r = subprocess.run(["/usr/libexec/PlistBuddy", "-c", f"Set :{key} {value}", plist], capture_output=True)
+            r = _run(["/usr/libexec/PlistBuddy", "-c", f"Set :{key} {value}", plist], timeout=10, text=False)
             if r.returncode != 0:
-                subprocess.run(["/usr/libexec/PlistBuddy", "-c", f"Add :{key} {typ} {value}", plist], capture_output=True)
+                _run(["/usr/libexec/PlistBuddy", "-c", f"Add :{key} {typ} {value}", plist], timeout=10, text=False)
 
         _plist_set("CFBundleName", BRAND)
         _plist_set("CFBundleDisplayName", BRAND)
@@ -207,7 +219,7 @@ def _build_notifier():
         NOTIFIER_APP.touch()
         # Register so the icon/identity resolve immediately (no icon-cache lag)
         lsreg = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-        subprocess.run([lsreg, "-f", str(NOTIFIER_APP)], capture_output=True)
+        _run([lsreg, "-f", str(NOTIFIER_APP)], timeout=30, text=False)
         return True
     except Exception:
         return False
@@ -224,15 +236,14 @@ def _notify(title: str, msg: str):
             t = " ".join(title.splitlines())
             m = " ".join(msg.splitlines())
             NOTIFY_PAYLOAD.write_text(f"{t}\n{m}")
-            subprocess.run(["open", "-a", str(NOTIFIER_APP)], capture_output=True, timeout=5)
+            _run(["open", "-a", str(NOTIFIER_APP)], timeout=5, text=False)
             return
         except Exception:
             pass
     t = title.replace("\\", "\\\\").replace('"', '\\"')
     m = msg.replace("\\", "\\\\").replace('"', '\\"')
     try:
-        subprocess.run(["osascript", "-e", f'display notification "{m}" with title "{t}"'],
-                       capture_output=True, timeout=5)
+        _run(["osascript", "-e", f'display notification "{m}" with title "{t}"'], timeout=5, text=False)
     except Exception:
         pass
 
@@ -248,7 +259,7 @@ def _ping_rtt():
     else:  # Linux
         cmd = ["ping", "-c", "1", "-W", "3", "1.1.1.1"]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=6).stdout
+        out = _run(cmd, timeout=6).stdout
         # Matches "time=1.2 ms" (macOS/Linux), "time=1ms" and "time<1ms" (Windows).
         m = re.search(r"time[=<]([\d.]+)", out)
         return round(float(m.group(1)), 1) if m else None
@@ -256,33 +267,38 @@ def _ping_rtt():
         return None
 
 
-def _ai_fleet():
+# The probes below read the process table AegisForge already scans each
+# sample (aegis.scan(): one psutil pass -> plain dicts). Each takes that table
+# as `procs`, or scans on its own when called standalone (None). Before this
+# the sampler walked the table seven times per minute -- four of them (fleet,
+# top process, VM, sessions) cost ~150 ms on a 700-process Mac on top of the
+# ~170 ms scan they now share -- and the CPU figures of each pass covered a
+# different, ever-shorter window; now every reading is the same 0.5 s window.
+
+def _table(procs):
+    return aegis.scan() if procs is None else procs
+
+
+def _ai_fleet(procs=None):
     groups = {"claude": [0, 0], "codex": [0, 0], "mcp": [0, 0]}
-    for p in psutil.process_iter(["cmdline", "memory_info"]):
-        try:
-            cmd = " ".join(p.info["cmdline"] or [])
-            rss = (p.info["memory_info"].rss if p.info["memory_info"] else 0) // (1024 * 1024)
-            if "anthropic.claude-code" in cmd or "/native-binary/claude" in cmd:
-                groups["claude"][0] += 1; groups["claude"][1] += rss
-            elif "openai.chatgpt" in cmd and "codex" in cmd:
-                groups["codex"][0] += 1; groups["codex"][1] += rss
-            elif "tradingview-mcp" in cmd or (cmd.endswith("server.js") and "mcp" in cmd.lower()):
-                groups["mcp"][0] += 1; groups["mcp"][1] += rss
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            continue
+    for p in _table(procs):
+        cmd = p["cmd"]
+        rss = p["rss"] // (1024 * 1024)
+        if "anthropic.claude-code" in cmd or "/native-binary/claude" in cmd:
+            groups["claude"][0] += 1; groups["claude"][1] += rss
+        elif "openai.chatgpt" in cmd and "codex" in cmd:
+            groups["codex"][0] += 1; groups["codex"][1] += rss
+        elif "tradingview-mcp" in cmd or (cmd.endswith("server.js") and "mcp" in cmd.lower()):
+            groups["mcp"][0] += 1; groups["mcp"][1] += rss
     return groups
 
 
-def _top_proc():
+def _top_proc(procs=None):
     best = ("", 0.0, 0)
-    for p in psutil.process_iter(["name", "cpu_percent", "memory_info"]):
-        try:
-            cpu = p.info["cpu_percent"] or 0.0
-            if cpu > best[1]:
-                rss = (p.info["memory_info"].rss if p.info["memory_info"] else 0) // (1024 * 1024)
-                best = ((p.info["name"] or "?")[:24], cpu, rss)
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            continue
+    for p in _table(procs):
+        cpu = p["cpu"]
+        if cpu > best[1]:
+            best = ((p["name"] or "?")[:24], cpu, p["rss"] // (1024 * 1024))
     # psutil per-process cpu_percent is 0..100*ncores -> normalize to system-wide 0..100% (no false alarms)
     ncpu = psutil.cpu_count() or 1
     return (best[0], best[1] / ncpu, best[2])
@@ -303,21 +319,13 @@ def _read_json(path, default):
         return default
 
 
-def _claude_sessions():
+def _claude_sessions(procs=None):
     """Live Claude Code sessions (VSCode extension), with current CPU and age."""
     out = []
-    for p in psutil.process_iter(["pid", "cmdline", "cpu_percent", "memory_info", "create_time"]):
-        try:
-            cmd = " ".join(p.info["cmdline"] or [])
-            if "anthropic.claude-code" in cmd or "/native-binary/claude" in cmd:
-                out.append({
-                    "pid": p.info["pid"],
-                    "cpu": p.info["cpu_percent"] or 0.0,
-                    "rss": (p.info["memory_info"].rss if p.info["memory_info"] else 0),
-                    "start": p.info["create_time"] or 0,
-                })
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            continue
+    for p in _table(procs):
+        cmd = p["cmd"]
+        if "anthropic.claude-code" in cmd or "/native-binary/claude" in cmd:
+            out.append({"pid": p["pid"], "cpu": p["cpu"], "rss": p["rss"], "start": p["ct"]})
     return out
 
 
@@ -383,14 +391,30 @@ _SIZE_RE = r"([\d.]+)\s*(B|KB|MB|GB|TB)\b"
 _SIZE_FACTOR_GB = {"B": 1e-9, "KB": 1e-6, "MB": 1e-3, "GB": 1.0, "TB": 1e3}
 
 
-def _ollama_status() -> dict:
+def _ollama_runner_pids(procs=None) -> list[int]:
+    """PIDs of ollama's runner subprocesses -- from the shared table when the
+    sampler hands one over, else one light (pid, cmdline) pass."""
+    if procs is not None:
+        return [p["pid"] for p in procs if "ollama" in p["cmd"] and "runner" in p["cmd"]]
+    pids = []
+    for p in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            cmd = " ".join(p.info["cmdline"] or [])
+            if "ollama" in cmd and "runner" in cmd:
+                pids.append(p.info["pid"])
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+    return pids
+
+
+def _ollama_status(procs=None) -> dict:
     """Loaded ollama models: {'gb': float, 'models': [names], 'busy': bool}.
 
     `busy` means a runner is actively inferring, so models must NOT be unloaded.
     """
     out = {"gb": 0.0, "models": [], "busy": False}
     try:
-        r = subprocess.run(["ollama", "ps"], capture_output=True, text=True, timeout=8)
+        r = _run(["ollama", "ps"], timeout=8)
         if r.returncode != 0:
             return out
         for line in r.stdout.splitlines()[1:]:
@@ -401,17 +425,21 @@ def _ollama_status() -> dict:
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
         return out
     out["gb"] = round(out["gb"], 1)
+    if not out["models"]:
+        # Nothing loaded => no runner can be inferring. Every consumer of `busy`
+        # gates on `models` / `gb` first, so skipping the runner probe (a
+        # process pass + a 0.2 s sleep, every minute ollama is up) changes nothing.
+        return out
     # A runner burning CPU is mid-inference -- treat as busy and never unload it.
     # Self-priming: psutil returns 0.0 on the FIRST cpu_percent read, so we must
     # prime + sample here rather than trust process_iter's unprimed value (which
     # would report "idle" always and let us unload a model mid-inference).
     runners = []
-    for p in psutil.process_iter(["cmdline"]):
+    for pid in _ollama_runner_pids(procs):
         try:
-            cmd = " ".join(p.info["cmdline"] or [])
-            if "ollama" in cmd and "runner" in cmd:
-                p.cpu_percent(None)      # prime
-                runners.append(p)
+            p = psutil.Process(pid)
+            p.cpu_percent(None)      # prime
+            runners.append(p)
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
     if runners:
@@ -426,7 +454,7 @@ def _ollama_status() -> dict:
     return out
 
 
-def _vm_status() -> dict:
+def _vm_status(procs=None) -> dict:
     """Virtual machine footprint: {'gb': float, 'owner': str}.
 
     com.apple.Virtualization.VirtualMachine is Apple's GENERIC VZ host, shared by
@@ -435,15 +463,12 @@ def _vm_status() -> dict:
     """
     gb = 0.0
     owners: list[tuple[float, str]] = []
-    for p in psutil.process_iter(["name", "cmdline", "memory_info"]):
-        try:
-            cmd = " ".join(p.info["cmdline"] or [])
-            if "Virtualization.VirtualMachine" in cmd or "com.docker.virtualization" in cmd:
-                rss = (p.info["memory_info"].rss if p.info["memory_info"] else 0) / 1e9
-                gb += rss
-                owners.append((rss, (p.info["name"] or "?")[:24]))
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            continue
+    for p in _table(procs):
+        cmd = p["cmd"]
+        if "Virtualization.VirtualMachine" in cmd or "com.docker.virtualization" in cmd:
+            rss = p["rss"] / 1e9
+            gb += rss
+            owners.append((rss, (p["name"] or "?")[:24]))
     # Attribute the alert to the heaviest VM process (best available hint).
     owner = max(owners)[1] if owners else ""
     return {"gb": round(gb, 1), "owner": owner}
@@ -454,7 +479,7 @@ def _unload_ollama(models: list[str]) -> list[str]:
     done = []
     for m in models:
         try:
-            r = subprocess.run(["ollama", "stop", m], capture_output=True, timeout=20)
+            r = _run(["ollama", "stop", m], timeout=20, text=False)
             if r.returncode == 0:
                 done.append(m)
         except subprocess.TimeoutExpired:
@@ -492,7 +517,7 @@ def _remediate(vm, sw, cfg, astate, now, sessions, streaks, oll):
         # persistently failing purge must not be retried on every 60s sample.
         astate["_purge"] = now
         try:
-            r = subprocess.run(["sudo", "-n", "purge"], capture_output=True, timeout=60)
+            r = _run(["sudo", "-n", "purge"], timeout=60, text=False)
             if r.returncode == 0:
                 done.append(("auto_purge", f"Purged inactive RAM (RAM {vm.percent:.0f}%, swap {sw.used/1e9:.0f} GB)"))
         except (subprocess.TimeoutExpired, OSError):
@@ -509,6 +534,15 @@ def _remediate(vm, sw, cfg, astate, now, sessions, streaks, oll):
     return done
 
 
+def _prime_cpu_counters():
+    """First cpu_percent read of a process is always 0.0: touch every process
+    once so the reads after the 0.5 s window carry real values. process_iter
+    with the attr already performs the read (as_dict), and swallows a process
+    that vanished or is off-limits meanwhile."""
+    for _ in psutil.process_iter(["cpu_percent"]):
+        pass
+
+
 def run_sample():
     """Take one measurement, record it, fire alerts. Called by the LaunchAgent."""
     MACMON_DIR.mkdir(exist_ok=True)
@@ -520,26 +554,26 @@ def run_sample():
     except Exception:
         pass
 
-    for p in psutil.process_iter(["cpu_percent"]):
-        try:
-            p.cpu_percent(None)
-        except Exception:
-            pass
+    _prime_cpu_counters()
     cpu = psutil.cpu_percent(interval=0.5)
 
     vm = psutil.virtual_memory()
     sw = psutil.swap_memory()
     du = psutil.disk_usage("/")
-    fleet = _ai_fleet()
-    tname, tcpu, trss = _top_proc()
+    # ONE process-table pass, right after the 0.5 s window the counters were
+    # primed for: the fleet, top process, VM, ollama-runner, session and
+    # AegisForge probes all read this table (see the note above _table).
+    table = aegis.scan()
+    fleet = _ai_fleet(table)
+    tname, tcpu, trss = _top_proc(table)
     rtt = _ping_rtt() if seq % max(1, int(cfg["ping_every"])) == 0 else None
-    oll = _ollama_status()
-    vmst = _vm_status()
+    oll = _ollama_status(table)
+    vmst = _vm_status(table)
 
-    # ── AegisForge observation: one process-table pass (families, lineage,
-    # proven leaks). Needs the persisted state, so it is read here.
+    # ── AegisForge observation (families, lineage, proven leaks) on the same
+    # table. Needs the persisted state, so it is read here.
     astate = _read_json(ASTATE, {})
-    forge = aegis.observe(astate, cfg)
+    forge = aegis.observe(astate, cfg, table)
 
     rec = {
         "ts": now, "cpu": round(cpu, 1), "ram": round(vm.percent, 1),
@@ -599,7 +633,7 @@ def run_sample():
 
     # ── Auto-remediation (safe escalation on memory pressure) ──
     try:
-        sessions = _claude_sessions()
+        sessions = _claude_sessions(table)
         streaks = _update_idle_streaks(sessions, astate)
         fired.extend(_remediate(vm, sw, cfg, astate, now, sessions, streaks, oll))
     except Exception as e:
@@ -915,14 +949,14 @@ def _scheduler_has(label: str) -> bool:
     """Is a scheduled task registered? Cross-platform."""
     try:
         if IS_MAC:
-            out = subprocess.run(["launchctl", "list"], capture_output=True, text=True).stdout
+            out = _run(["launchctl", "list"]).stdout
             return label in out
         if IS_WINDOWS:
-            r = subprocess.run(["schtasks", "/query", "/tn", _TASK_NAME], capture_output=True, text=True)
+            r = _run(["schtasks", "/query", "/tn", _TASK_NAME])
             return r.returncode == 0
-        out = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+        out = _run(["crontab", "-l"]).stdout
         return _TASK_NAME in out
-    except FileNotFoundError:
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
 
@@ -957,12 +991,15 @@ def _macmon(*args):
 
 
 def _plist(label: str, program_args: list[str], interval: int) -> str:
-    args = "\n".join(f"        <string>{a}</string>" for a in program_args)
+    # XML-escaped: a checkout under "Dev & Co" (or a '<' in a path) would
+    # otherwise yield a plist launchd rejects -- a job that never runs while
+    # --resume reports success.
+    args = "\n".join(f"        <string>{_xml_escape(a)}</string>" for a in program_args)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key><string>{label}</string>
+    <key>Label</key><string>{_xml_escape(label)}</string>
     <key>ProgramArguments</key>
     <array>
 {args}
@@ -1032,40 +1069,46 @@ def _schedule_install() -> tuple[bool, str]:
     if not cmd:
         return (False, "no macmon to schedule -- install the CLI (install.sh or pip install -e .) "
                        "and run 'macmon sentinel --resume'")
-    if IS_MAC:
-        la_dir = Path.home() / "Library/LaunchAgents"
-        la_dir.mkdir(parents=True, exist_ok=True)
-        uid = os.getuid()
-        plist_path = la_dir / f"{MONITOR_LABEL}.plist"
-        plist_path.write_text(_plist(MONITOR_LABEL, cmd, 60))
-        subprocess.run(["launchctl", "bootout", f"gui/{uid}/{MONITOR_LABEL}"], capture_output=True)
-        r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)], capture_output=True, text=True)
+    try:
+        if IS_MAC:
+            la_dir = Path.home() / "Library/LaunchAgents"
+            la_dir.mkdir(parents=True, exist_ok=True)
+            uid = os.getuid()
+            plist_path = la_dir / f"{MONITOR_LABEL}.plist"
+            plist_path.write_text(_plist(MONITOR_LABEL, cmd, 60))
+            _run(["launchctl", "bootout", f"gui/{uid}/{MONITOR_LABEL}"])
+            r = _run(["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)])
+            return (r.returncode == 0, r.stderr.strip())
+        if IS_WINDOWS:
+            tr = " ".join(f'"{c}"' for c in _prefer_pythonw(cmd))
+            r = _run(["schtasks", "/create", "/tn", _TASK_NAME, "/tr", tr,
+                      "/sc", "minute", "/mo", "1", "/f"])
+            return (r.returncode == 0, r.stderr.strip())
+        # Linux: cron (per-minute)
+        # Quote each arg -- an unquoted join breaks if the repo/home path has a space.
+        line = "* * * * * " + " ".join(shlex.quote(c) for c in cmd) + f"  # {_TASK_NAME}\n"
+        cur = _run(["crontab", "-l"]).stdout
+        cur = "\n".join(l for l in cur.splitlines() if _TASK_NAME not in l)
+        new = (cur + "\n" + line).strip() + "\n"
+        r = _run(["crontab", "-"], input=new)
         return (r.returncode == 0, r.stderr.strip())
-    if IS_WINDOWS:
-        tr = " ".join(f'"{c}"' for c in _prefer_pythonw(cmd))
-        r = subprocess.run(["schtasks", "/create", "/tn", _TASK_NAME, "/tr", tr,
-                            "/sc", "minute", "/mo", "1", "/f"], capture_output=True, text=True)
-        return (r.returncode == 0, r.stderr.strip())
-    # Linux: cron (per-minute)
-    # Quote each arg -- an unquoted join breaks if the repo/home path has a space.
-    line = "* * * * * " + " ".join(shlex.quote(c) for c in cmd) + f"  # {_TASK_NAME}\n"
-    cur = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
-    cur = "\n".join(l for l in cur.splitlines() if _TASK_NAME not in l)
-    new = (cur + "\n" + line).strip() + "\n"
-    r = subprocess.run(["crontab", "-"], input=new, capture_output=True, text=True)
-    return (r.returncode == 0, r.stderr.strip())
+    except subprocess.TimeoutExpired as e:
+        return (False, f"scheduler command timed out: {e.cmd[0]}")
 
 
 def _schedule_remove():
-    if IS_MAC:
-        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{MONITOR_LABEL}"], capture_output=True)
-        (Path.home() / f"Library/LaunchAgents/{MONITOR_LABEL}.plist").unlink(missing_ok=True)
-    elif IS_WINDOWS:
-        subprocess.run(["schtasks", "/delete", "/tn", _TASK_NAME, "/f"], capture_output=True)
-    else:
-        cur = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
-        new = "\n".join(l for l in cur.splitlines() if _TASK_NAME not in l).strip() + "\n"
-        subprocess.run(["crontab", "-"], input=new, capture_output=True, text=True)
+    try:
+        if IS_MAC:
+            _run(["launchctl", "bootout", f"gui/{os.getuid()}/{MONITOR_LABEL}"])
+            (Path.home() / f"Library/LaunchAgents/{MONITOR_LABEL}.plist").unlink(missing_ok=True)
+        elif IS_WINDOWS:
+            _run(["schtasks", "/delete", "/tn", _TASK_NAME, "/f"])
+        else:
+            cur = _run(["crontab", "-l"]).stdout
+            new = "\n".join(l for l in cur.splitlines() if _TASK_NAME not in l).strip() + "\n"
+            _run(["crontab", "-"], input=new)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def install():
@@ -1125,7 +1168,7 @@ def _purge_nopasswd_ready() -> bool:
     if not IS_MAC:
         return False
     try:
-        r = subprocess.run(["sudo", "-n", "-l", "/usr/sbin/purge"], capture_output=True, timeout=10)
+        r = _run(["sudo", "-n", "-l", "/usr/sbin/purge"], timeout=10, text=False)
         return r.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
@@ -1246,11 +1289,7 @@ def setup_purge():
 def manual_trim():
     """Close idle AI sessions now, on demand (keeps the configured minimum)."""
     cfg = _conf()
-    for p in psutil.process_iter(["cpu_percent"]):
-        try:
-            p.cpu_percent(None)
-        except Exception:
-            pass
+    _prime_cpu_counters()
     time.sleep(0.5)
     sessions = _claude_sessions()
     # Build streaks from the CPU just measured over the 0.5s priming window:
@@ -1272,11 +1311,7 @@ def manual_reap():
     nothing is persisted here."""
     cfg = _conf()
     astate = _read_json(ASTATE, {})
-    for p in psutil.process_iter(["cpu_percent"]):
-        try:
-            p.cpu_percent(None)
-        except Exception:
-            pass
+    _prime_cpu_counters()
     time.sleep(0.5)
     forge = aegis.observe(astate, cfg)
     leaks = forge["leaks"]

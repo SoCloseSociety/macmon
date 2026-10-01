@@ -153,7 +153,7 @@ def notify(title: str, message: str):
             subprocess.run(
                 ["osascript", "-e",
                  f'display notification "{_escape_applescript(message)}" with title "{_escape_applescript(title)}"'],
-                capture_output=True, timeout=5)
+                capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
         elif IS_WINDOWS:
             # PowerShell balloon/toast via the shell (no external deps).
             # ShowBalloonTip is async: without the sleep, PowerShell exits and
@@ -169,9 +169,10 @@ def notify(title: str, message: str):
                 "$n.Dispose();"
             )
             subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                           capture_output=True, timeout=12)
+                           capture_output=True, timeout=12, stdin=subprocess.DEVNULL)
         elif IS_LINUX:
-            subprocess.run(["notify-send", title, message], capture_output=True, timeout=5)
+            subprocess.run(["notify-send", title, message], capture_output=True, timeout=5,
+                           stdin=subprocess.DEVNULL)
     except Exception:
         pass
 

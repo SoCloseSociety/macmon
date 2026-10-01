@@ -3,10 +3,12 @@
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
 from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape
 
 import psutil
 
@@ -330,7 +332,11 @@ def _clean_paths(paths: list[str], permanent: bool = False) -> int:
             p = Path(path)
             if not p.exists():
                 continue
-            size = dir_size(p) if p.is_dir() and not p.is_symlink() else (safe_stat(p).st_size if safe_stat(p) else 0)
+            if p.is_dir() and not p.is_symlink():
+                size = dir_size(p)
+            else:
+                st = safe_stat(p)
+                size = st.st_size if st else 0
             if _trash_or_rm(p, permanent):
                 freed += size
         except (OSError, PermissionError) as e:
@@ -412,28 +418,44 @@ def _scan_system_junk() -> list[dict]:
 _TEMP_SKIP_SUFFIXES = (".lock", ".pid", ".sock")
 
 
-def _is_protected_temp_file(f: Path) -> bool:
-    name = f.name
+def _is_protected_temp_name(name: str) -> bool:
     return name.startswith(".") or name.lower().endswith(_TEMP_SKIP_SUFFIXES)
+
+
+def _is_protected_temp_file(f: Path) -> bool:
+    return _is_protected_temp_name(f.name)
+
+
+def _regular_files(directory: Path):
+    """(path, lstat) for every regular file under ``directory`` -- one
+    ``lstat`` per entry instead of ``rglob`` + ``is_file`` + ``is_symlink`` +
+    ``stat`` (three stat calls). Symlinks are neither followed nor yielded;
+    unreadable subtrees are skipped, like ``rglob`` did."""
+    try:
+        for root, _dirs, files in os.walk(directory):
+            for fname in files:
+                full = os.path.join(root, fname)
+                try:
+                    st = os.lstat(full)
+                except OSError:
+                    continue
+                if stat.S_ISREG(st.st_mode):
+                    yield full, st
+    except (OSError, PermissionError):
+        return
 
 
 def _scan_old_files(directory: Path, cutoff: float) -> tuple[int, int, list[str]]:
     total_size = 0
     count = 0
     paths = []
-    try:
-        for f in directory.rglob("*"):
-            if f.is_file() and not f.is_symlink() and not _is_protected_temp_file(f):
-                try:
-                    st = f.stat()
-                    if st.st_mtime < cutoff:
-                        total_size += st.st_size
-                        count += 1
-                        paths.append(str(f))
-                except (OSError, PermissionError):
-                    pass
-    except (OSError, PermissionError):
-        pass
+    for full, st in _regular_files(directory):
+        if _is_protected_temp_name(os.path.basename(full)):
+            continue
+        if st.st_mtime < cutoff:
+            total_size += st.st_size
+            count += 1
+            paths.append(full)
     return total_size, count, paths
 
 
@@ -442,17 +464,10 @@ def _scan_dir_all(directory: Path) -> tuple[int, int, list[str]]:
     total_size = 0
     count = 0
     paths = []
-    try:
-        for f in directory.rglob("*"):
-            if f.is_file() and not f.is_symlink():
-                try:
-                    total_size += f.stat().st_size
-                    count += 1
-                    paths.append(str(f))
-                except (OSError, PermissionError):
-                    pass
-    except (OSError, PermissionError):
-        pass
+    for full, st in _regular_files(directory):
+        total_size += st.st_size
+        count += 1
+        paths.append(full)
     return total_size, count, paths
 
 
@@ -752,7 +767,7 @@ def _clean_clipboard():
         console.print("[yellow]Clipboard clearing requires macOS.[/]")
         return
     try:
-        subprocess.run(["pbcopy"], input=b"", timeout=5)
+        subprocess.run(["pbcopy"], input=b"", timeout=5, capture_output=True)
         console.print("[green]Clipboard cleared.[/]")
         log_action("clean_clipboard")
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -806,6 +821,9 @@ def _setup_schedule():
         return
     plist_path = Path.home() / "Library/LaunchAgents/com.macmon.autoclean.plist"
     macmon_path = Path(__file__).parent.parent / "macmon.py"
+    # XML-escape every path: a checkout or home under "Dev & Co" would
+    # otherwise produce a plist launchd cannot parse (silent no-op job).
+    py_x, macmon_x, log_x = (_xml_escape(str(v)) for v in (sys.executable, macmon_path, Path.home()))
 
     plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -815,8 +833,8 @@ def _setup_schedule():
     <string>com.macmon.autoclean</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{sys.executable}</string>
-        <string>{macmon_path}</string>
+        <string>{py_x}</string>
+        <string>{macmon_x}</string>
         <string>clean</string>
         <string>--all</string>
         <string>-y</string>
@@ -831,9 +849,9 @@ def _setup_schedule():
         <integer>0</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>{Path.home()}/.macmon/autoclean.log</string>
+    <string>{log_x}/.macmon/autoclean.log</string>
     <key>StandardErrorPath</key>
-    <string>{Path.home()}/.macmon/autoclean.log</string>
+    <string>{log_x}/.macmon/autoclean.log</string>
 </dict>
 </plist>
 """

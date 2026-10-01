@@ -818,15 +818,16 @@ def _hermetic_sample(monkeypatch, tmp_path, swap_used=5.5e9, forge=None):
     monkeypatch.setattr(ps, "swap_memory", lambda: ns(used=swap_used))
     monkeypatch.setattr(ps, "disk_usage", lambda p: ns(free=100e9))
     monkeypatch.setattr(sentinel, "load_average", lambda: (1.0, 1.0, 1.0))
-    monkeypatch.setattr(sentinel, "_ai_fleet", lambda: {"claude": [0, 0], "codex": [0, 0], "mcp": [0, 0]})
-    monkeypatch.setattr(sentinel, "_top_proc", lambda: ("x", 1.0, 10))
+    # The probes take the shared process table (procs=None when standalone).
+    monkeypatch.setattr(sentinel, "_ai_fleet", lambda procs=None: {"claude": [0, 0], "codex": [0, 0], "mcp": [0, 0]})
+    monkeypatch.setattr(sentinel, "_top_proc", lambda procs=None: ("x", 1.0, 10))
     monkeypatch.setattr(sentinel, "_ping_rtt", lambda: None)
-    monkeypatch.setattr(sentinel, "_ollama_status", lambda: {"gb": 0.0, "models": [], "busy": False})
-    monkeypatch.setattr(sentinel, "_vm_status", lambda: {"gb": 0.0, "owner": ""})
-    monkeypatch.setattr(sentinel, "_claude_sessions", lambda: [])
+    monkeypatch.setattr(sentinel, "_ollama_status", lambda procs=None: {"gb": 0.0, "models": [], "busy": False})
+    monkeypatch.setattr(sentinel, "_vm_status", lambda procs=None: {"gb": 0.0, "owner": ""})
+    monkeypatch.setattr(sentinel, "_claude_sessions", lambda procs=None: [])
     forge = forge or {"record": {"ncpu": 12, "fam": {}, "pc": {}, "orph": [0, 0], "topn": [], "toprss": []},
                       "leaks": [], "cands": [], "streaks": {}}
-    monkeypatch.setattr(sentinel.aegis, "observe", lambda astate, cfg: forge)
+    monkeypatch.setattr(sentinel.aegis, "observe", lambda astate, cfg, procs=None: forge)
     notes = []
     monkeypatch.setattr(sentinel, "_notify", lambda t, m: notes.append((t, m)))
     return notes

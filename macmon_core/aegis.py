@@ -597,9 +597,11 @@ def observe_table(procs: list[dict], astate: dict, cfg: dict, ncpu: int) -> dict
     return {"record": record, "leaks": leaks, "cands": cands, "streaks": streaks}
 
 
-def observe(astate: dict, cfg: dict) -> dict:
-    """Scan the live process table and observe it (see observe_table)."""
-    return observe_table(scan(), astate, cfg, psutil.cpu_count() or 1)
+def observe(astate: dict, cfg: dict, procs: list = None) -> dict:
+    """Observe the live process table (see observe_table). ``procs`` is a
+    table already produced by ``scan()`` -- the sampler passes the one pass
+    it shares with every other probe -- or None to scan here."""
+    return observe_table(scan() if procs is None else procs, astate, cfg, psutil.cpu_count() or 1)
 
 
 # ── Detectors (pure over the metrics history) ────────────────────────────

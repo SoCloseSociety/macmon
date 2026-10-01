@@ -1,11 +1,21 @@
 """Advanced Docker management for macmon."""
 
 import json
+import re
 
 from rich.panel import Panel
 from rich.table import Table
 
 from .utils import confirm_action, console, log_action, run_cmd
+
+# Docker's own container name grammar ([a-zA-Z0-9][a-zA-Z0-9_.-]+) plus a bare
+# hex ID. Anything else -- in particular a leading "-" -- cannot be a container
+# and would be parsed by the docker CLI as a flag ("--help", "-f") instead.
+_CONTAINER_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def _valid_container_ref(ref: str) -> bool:
+    return bool(ref) and bool(_CONTAINER_REF_RE.fullmatch(ref))
 
 
 def _docker_available() -> bool:
@@ -427,6 +437,9 @@ def _docker_stop_all(force_yes: bool = False):
 
 
 def _docker_restart(container: str):
+    if not _valid_container_ref(container):
+        console.print(f"[red]Invalid container name or ID: {container!r}[/]")
+        return
     out, err, rc = run_cmd(["docker", "restart", container], timeout=30)
     if rc == 0:
         console.print(f"[green]Restarted container: {container}[/]")
@@ -436,6 +449,9 @@ def _docker_restart(container: str):
 
 
 def _docker_logs(container: str):
+    if not _valid_container_ref(container):
+        console.print(f"[red]Invalid container name or ID: {container!r}[/]")
+        return
     out, err, rc = run_cmd(["docker", "logs", "--tail", "50", container], timeout=10)
     if rc == 0:
         # `docker logs` replays the app's stdout AND stderr on the matching

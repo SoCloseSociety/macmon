@@ -162,7 +162,8 @@ def _get_cpu_temp_osx():
     """Get CPU temp via sensor tools; None when no real sensor is available."""
     # Method 1: try osx-cpu-temp if installed
     try:
-        out = subprocess.run(["osx-cpu-temp"], capture_output=True, text=True, timeout=2)
+        out = subprocess.run(["osx-cpu-temp"], capture_output=True, text=True, timeout=2,
+                             stdin=subprocess.DEVNULL)
         if out.returncode == 0:
             # e.g. "65.2°C" -- a 0.0 reading means the tool has no sensor access
             val = float(out.stdout.strip().replace("°C", "").replace("C", "").strip())
@@ -173,7 +174,8 @@ def _get_cpu_temp_osx():
 
     # Method 2: try istats if installed
     try:
-        out = subprocess.run(["istats", "cpu", "temp", "--value-only"], capture_output=True, text=True, timeout=3)
+        out = subprocess.run(["istats", "cpu", "temp", "--value-only"], capture_output=True, text=True, timeout=3,
+                             stdin=subprocess.DEVNULL)
         if out.returncode == 0 and out.stdout.strip():
             val = float(out.stdout.strip())
             if val > 0:
@@ -188,7 +190,8 @@ def _get_cpu_temp_osx():
 def _get_fan_speed_osx(cpu_pct: float = 0):
     """Get fan speed via istats or estimation."""
     try:
-        out = subprocess.run(["istats", "fan", "speed", "--value-only"], capture_output=True, text=True, timeout=3)
+        out = subprocess.run(["istats", "fan", "speed", "--value-only"], capture_output=True, text=True, timeout=3,
+                             stdin=subprocess.DEVNULL)
         if out.returncode == 0 and out.stdout.strip():
             lines = out.stdout.strip().splitlines()
             return int(float(lines[0]))

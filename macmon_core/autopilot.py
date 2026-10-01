@@ -292,7 +292,8 @@ def _evaluate_thermal_rules(db, cfg: dict):
 
     try:
         import subprocess
-        out = subprocess.run(["osx-cpu-temp"], capture_output=True, text=True, timeout=2)
+        out = subprocess.run(["osx-cpu-temp"], capture_output=True, text=True, timeout=2,
+                             stdin=subprocess.DEVNULL)
         if out.returncode == 0:
             parsed = float(out.stdout.strip().replace("°C", "").replace("C", "").strip())
             if parsed > 0:  # 0.0 means no sensor (Apple Silicon)
