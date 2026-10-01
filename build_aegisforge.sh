@@ -29,7 +29,9 @@ say "Ensuring build deps (rumps, pyobjc, pyinstaller) in $VENV"
 # on macOS it is the explicit `--collect-all webview` below (plus the pyobjc
 # hidden imports) that pulls the cocoa backend + WebKit bridge into the bundle.
 # hooks-contrib stays installed: harmless, and it covers other deps.
-"$PY" -m pip install -q --upgrade "pywebview>=5" "rumps>=0.4" "pyobjc-framework-Cocoa>=10" \
+# PySide6 is the PRIMARY (native Qt) face; pywebview + rumps/pyobjc are the macOS
+# fallbacks. PyInstaller's PySide6 hook bundles Qt + the cocoa platform plugin.
+"$PY" -m pip install -q --upgrade "PySide6>=6.6" "pywebview>=5" "rumps>=0.4" "pyobjc-framework-Cocoa>=10" \
   pyinstaller pyinstaller-hooks-contrib >/dev/null
 
 # 2. Render the monochrome menu-bar template glyph from the brand mono mark.
@@ -56,6 +58,8 @@ rm -rf "build/$APP_NAME" "dist/$APP_NAME.app"
   --icon "$ICNS" \
   --osx-bundle-identifier "$BUNDLE_ID" \
   --collect-submodules macmon_core \
+  --collect-all PySide6 \
+  --collect-all shiboken6 \
   --collect-all webview \
   --collect-all objc \
   --collect-all rumps \

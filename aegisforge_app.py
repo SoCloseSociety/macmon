@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
-"""PyInstaller entry point for AegisForge.app (the macOS app).
+"""PyInstaller entry point for AegisForge.app (the desktop app).
 
-Prefers a NATIVE app window (pywebview/WKWebView) rendering the multi-section
-AegisForge app -- the fleet Sentinel pattern: a real window, not a browser tab.
-Reads come over the loopback server (GET-only); actions (kill / clean / prune /
-pause ...) go through the window's js_api bridge (``macmon_core.app_api``),
-which exists nowhere else. Falls back to the menu-bar agent (which opens the
-dashboard in the browser and carries its own action items) if pywebview is
-absent, then to a helpful message. All logic lives in macmon_core so the CLI and
-the .app share one engine. Build with ./build_aegisforge.sh.
+The NATIVE Qt app (``macmon_core.app_native``, PySide6 widgets -- no webview)
+is the primary face: a real window with the seven sections, calling the
+engine in-process through ``macmon_core.app_api.Api`` (every guardrail lives
+there) and reading through ``macmon_core.app_webui``'s dict builders on a
+worker thread. It runs on macOS and Windows.
+
+Fallbacks, in order, so nothing regresses when a dependency is missing:
+  1. PySide6 absent  -> the pywebview / WKWebView window (``app_webui.run_window``)
+  2. pywebview absent -> the menu-bar agent (``app_menubar.main``), which opens
+     the read-only dashboard in the browser and carries its own action items
+All logic lives in macmon_core so the CLI and the .app share one engine.
+Build with ./build_aegisforge.sh.
 """
 
 
 def main() -> int:
+    try:
+        from macmon_core import app_native
+    except ImportError:
+        app_native = None
+    if app_native is not None:
+        return app_native.run()
     try:
         from macmon_core import app_webui
         if app_webui.run_window():   # blocks until the window closes
