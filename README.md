@@ -520,12 +520,13 @@ Then, and only then, it gets **SIGTERM** (never SIGKILL). A process with a live
 parent is never signalled, whatever the swarm looks like: the swarm detector
 names the spawner and leaves stopping it to you.
 
-### Native macOS app (AegisForge.app)
+### Native desktop app (AegisForge.app -- macOS + Windows)
 
-Prefer a real app window to the terminal? `AegisForge.app` is a native desktop
-app (pywebview / WKWebView, Dock icon -- the fleet's Sentinel model) wrapping the
-same engine, with a sidebar of seven sections and a top bar of live vitals plus
-a global worst-severity indicator:
+Prefer a real app window to the terminal? `AegisForge.app` is a TRUE native
+desktop app -- **PySide6 / Qt native widgets, not a webview** (Dock icon, the
+fleet's Sentinel model) -- wrapping the same engine, cross-platform, with a
+sidebar of seven sections and a top bar of live vitals plus a global
+worst-severity indicator:
 
 | Section | What it shows | What it can do (each a confirmed funnel) |
 | --- | --- | --- |
@@ -537,15 +538,19 @@ a global worst-severity indicator:
 | Disk | top-level usage bars, big files | Reveal in Finder |
 | Sentinel | sampler state, FORGE trends, the detectors, thresholds | Pause / Resume, the four opt-in auto-remediation switches (default OFF) |
 
-Reads come over a loopback-only `127.0.0.1` HTTP origin that is GET-only,
-Host-gated and CSP'd; **actions go through pywebview's `js_api` bridge only**,
-which exists inside the app window and nowhere else -- so a DNS-rebinding page
-can neither read the telemetry nor reach a lever. Every guardrail holds through
-the bridge: protected processes are refused, a guarded one (IDE, agent, LLM,
-container, the fleet ...) needs an explicit acknowledgement, cleaning is
-preview-first and Trash-first, nothing auto-runs. Opened in a plain browser tab
-the page is a read-only dashboard and says so. It does not sample on its own --
-it reads what the 60s LaunchAgent sampler wrote.
+The UI thread never calls the engine: every read and every action runs on a Qt
+thread pool and returns on the UI thread through a queued signal, so a disk walk
+or a security scan never freezes the window. **Actions go through `app_api.Api`
+in-process** -- the one guarded entry point -- and only from a funnel's confirm
+step; reads are the same pure dict builders the CLI shares. Every guardrail
+holds: protected processes are refused, a guarded one (IDE, agent, LLM,
+container, the fleet, the app's own render process ...) needs an explicit
+acknowledgement, cleaning is preview-first and Trash-first, the docker prune is
+dangling-only, only the four opt-in keys flip, nothing auto-runs on construction
+or a timer. It does not sample on its own -- it reads what the 60s LaunchAgent
+sampler wrote. If PySide6 is absent the entry point falls back to the pywebview
+window, then the menu-bar agent, so nothing regresses. **Full Disk Access** is
+still needed to analyze/clean macOS-protected folders (as for any Mac disk tool).
 
 The page is built on one design system (`assets/webui/app.css`): the AegisForge
 brand tokens (ground / mint / ember, the same `C[]` palette the Rich console

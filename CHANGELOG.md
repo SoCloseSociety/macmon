@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed -- AegisForge.app is now a TRUE native app (no webview)
+- The desktop app is a real **PySide6 / Qt** application (native widgets), not a WKWebView wrapper, cross-platform (macOS + Windows). New package `macmon_core/app_native/`: `theme.py` (QSS built from the `aegis.C[]` / `--af-*` brand palette, dark + light with an Auto/Dark/Light toggle persisted via `QSettings`), `widgets.py` (cards, vital bars, SVG-free ring, tables with the `PROTECTED` badge, stepper, confirm dialog, toasts, opt-in switches), `sections.py` (the same seven sections + funnels), `window.py` (sidebar + `QStackedWidget` + nav), `workers.py` (a `QThreadPool` model -- the UI thread never calls the engine; every read/action runs on a pool thread and returns via a queued `Signal`).
+- It **reuses the engine unchanged**: actions go through `app_api.Api` in-process (every guardrail holds -- protected set, recycled-PID, never_touch + acknowledged override, SIGTERM-only, preview-first/Trash-first clean, dangling-only prune, the four opt-in keys, WebKit/own-tree refusal, name-safe verdicts), reads are `app_webui`'s dict builders on a worker. No engine module changed for the UI.
+- `aegisforge_app.py` launches the native app by default and falls back to the pywebview window, then the menu-bar agent, if PySide6 (or pywebview) is absent. `build_aegisforge.sh` bundles PySide6 (+ shiboken6); the `[app]` extra adds `PySide6` (primary) with pywebview/rumps/pyobjc kept as the macOS fallback. The `macmon` CLI never depends on any of it.
+- `tests/test_app_native.py` (offscreen Qt): the 7 sections build and switch, the default api is the real guarded `app_api.Api`, nothing mutates on construction or navigation (only a funnel's confirm step acts), the theme mirrors the brand palette, and a worker result arriving after its owner widget died is dropped, never raised.
+
+### Performance + Security -- engine optimization pass
+- `utils.run_cmd` is argv-only (never a shell), passes `stdin=subprocess.DEVNULL` (a child inheriting a windowed/closed stdin can block forever) and enforces `sudo -n` on every privileged call via `_sudo_argv` (fails fast instead of hanging on an unseen prompt); all engine plumbing routes through it (no direct `subprocess.run` in the hot paths, asserted).
+- The sentinel sampler scans the process table exactly ONCE per sample (was rescanning), and `aegis.observe_table` reuses the passed table.
+- `security._security_checks` runs its independent read-only probes concurrently with a result list IDENTICAL in content, order and score to the sequential run (asserted) -- a real wall-clock win on the multi-subprocess scan.
+- `cleaner` does one `lstat` per entry (no `stat`+`is_file` double call), never follows symlinks, keeps the protected-temp guard. No `shell=True` anywhere (asserted). New `tests/test_engine_hardening.py` (38 tests) locks the subprocess, concurrency and guard invariants. No guardrail weakened.
+
 ### Changed -- PyPI distribution name
 - The package publishes on PyPI as **`aegisforge`** (the product brand): the `macmon` name on PyPI is held by an unrelated project. The CLI command stays `macmon`, the import package stays `macmon_core` -- only `pip install <name>` changes (`pip install aegisforge`). `twine check` passes on the sdist + wheel; a fresh-venv install exposes the working `macmon` command.
 
