@@ -297,7 +297,10 @@ pipx install .
 ```
 
 For development, use an editable install: `pip install -e .`
-(PyPI release planned -- `pip install macmon` will work once published.)
+
+PyPI release planned under the brand name (the `macmon` name on PyPI belongs to
+an unrelated project): `pip install aegisforge` will install the same `macmon`
+command once published.
 
 ### Build DMG (optional)
 

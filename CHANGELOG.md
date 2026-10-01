@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed -- PyPI distribution name
+- The package publishes on PyPI as **`aegisforge`** (the product brand): the `macmon` name on PyPI is held by an unrelated project. The CLI command stays `macmon`, the import package stays `macmon_core` -- only `pip install <name>` changes (`pip install aegisforge`). `twine check` passes on the sdist + wheel; a fresh-venv install exposes the working `macmon` command.
+
 ### Documented -- Full Disk Access for the app
 - Runtime-testing the FROZEN `AegisForge.app` (not just the CLI / the dev server, which inherit the terminal's access) surfaced that a **Disk** analysis of a macOS-protected folder (Documents / Desktop / Downloads) blocks on the TCC gate when the app lacks Full Disk Access -- the walk cannot complete and holds a scanner slot. The build cannot grant TCC, so this is documented (README) and the "scanner busy" message now points at *System Settings > Privacy & Security > Full Disk Access*. Accessible paths (`/usr/local`, `/Applications`, ...) are unaffected, as is the CLI.
 
