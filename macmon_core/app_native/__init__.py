@@ -20,8 +20,9 @@ menu-bar agent. PySide6 is app-only (``pip install -e ".[app]"``); the
 """
 from __future__ import annotations
 
-import PySide6  # noqa: F401  -- the whole package is unavailable without Qt
-
+# `window` imports PySide6 at its top, so this raises ImportError when Qt is not
+# installed -- which is exactly how aegisforge_app.py detects the absence and
+# falls back to the pywebview window, then the menu-bar agent.
 from .window import MainWindow, Reads, apply_theme, run
 
 __all__ = ["MainWindow", "Reads", "apply_theme", "run"]

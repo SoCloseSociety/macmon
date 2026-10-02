@@ -207,10 +207,17 @@ class TestDirSizeWalker:
         monkeypatch.setattr(os, "lstat", lambda p, *x, **k: (lstats.append(p), real_lstat(p, *x, **k))[1])
         monkeypatch.setattr(os, "stat", lambda p, *x, **k: (stats.append(p), real_stat(p, *x, **k))[1])
         assert utils.dir_size(a) == expected
-        # one lstat per file (ours) + one per directory (os.walk's own islink
-        # guard before descending); never a following stat() / is_file()
-        assert len([p for p in lstats if str(p).startswith(root)]) == sum(len(files) + len(dirs) for _, dirs, files in os.walk(a))
+        under = [str(p) for p in lstats if str(p).startswith(root)]
+        # NEVER a following stat() / is_file() -- the whole point of the one-pass
+        # walk (the legacy form cost an extra stat + is_file per entry).
         assert [p for p in stats if str(p).startswith(root)] == []
+        # No entry is lstat'd more than once. (os.walk's own dir islink-guard
+        # lstat is platform-dependent -- POSIX lstats each dir, Windows reads it
+        # from the scandir cache -- so pin "no double lstat", not files+dirs.)
+        assert len(under) == len(set(under))
+        # every regular file under the tree was lstat'd exactly once by dir_size
+        walked_files = {os.path.join(r, f) for r, _dirs, files in os.walk(a) for f in files}
+        assert walked_files <= set(under)
 
     def test_missing_or_file_path_is_zero(self, tmp_path):
         assert utils.dir_size(tmp_path / "nope") == 0
