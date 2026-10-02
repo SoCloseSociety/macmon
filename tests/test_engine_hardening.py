@@ -96,6 +96,56 @@ class TestRunCmdNeverInteractive:
         assert utils.run_cmd(["pfctl"], sudo=True) == ("", "Command not found: sudo", -2)
 
 
+# ── admin_run: the user-initiated privileged path (native auth dialog) ────
+class TestAdminRun:
+    @pytest.fixture
+    def rec(self, monkeypatch):
+        from macmon_core import platform_compat
+        monkeypatch.setattr(platform_compat, "IS_MAC", True)   # force the osascript path
+        seen = []
+        monkeypatch.setattr(utils.subprocess, "run",
+                            lambda cmd, **kw: (seen.append((list(cmd), kw)), _ok("done"))[1])
+        return seen
+
+    def test_builds_a_single_authorized_osascript(self, rec):
+        out, err, rc = utils.admin_run(["/usr/sbin/purge"])
+        cmd, kw = rec[0]
+        assert cmd[0] == "osascript" and cmd[1] == "-e"
+        assert cmd[2] == 'do shell script "/usr/sbin/purge" with administrator privileges'
+        assert kw["stdin"] is subprocess.DEVNULL and (out, rc) == ("done", 0)
+
+    def test_multiple_commands_share_one_authorization(self, rec):
+        fw = "/usr/libexec/ApplicationFirewall/socketfilterfw"
+        utils.admin_run([[fw, "--add", "/Applications/X.app"], [fw, "--blockapp", "/Applications/X.app"]])
+        script = rec[0][0][2]
+        assert script.count("do shell script") == 1 and " && " in script   # one dialog, both commands
+
+    def test_arguments_are_shell_quoted_no_injection(self, rec):
+        evil = "/tmp/a b; rm -rf ~"
+        utils.admin_run([["/bin/echo", evil]])
+        script = rec[0][0][2]
+        # the dangerous value is a single quoted token, never bare shell syntax
+        assert "'/tmp/a b; rm -rf ~'" in script
+        assert "; rm -rf ~ with" not in script
+
+    def test_off_mac_falls_back_to_sudo_dash_n(self, monkeypatch):
+        from macmon_core import platform_compat
+        monkeypatch.setattr(platform_compat, "IS_MAC", False)
+        seen = []
+        monkeypatch.setattr(utils.subprocess, "run",
+                            lambda cmd, **kw: (seen.append(list(cmd)), _ok("x"))[1])
+        utils.admin_run([["pfctl", "-E"]])
+        assert seen[0] == ["sudo", "-n", "pfctl", "-E"]   # no native dialog off macOS
+
+    def test_user_cancel_is_reported(self, monkeypatch):
+        from macmon_core import platform_compat
+        monkeypatch.setattr(platform_compat, "IS_MAC", True)
+        monkeypatch.setattr(utils.subprocess, "run",
+                            lambda cmd, **kw: _ok("", "User canceled. (-128)", 1))
+        out, err, rc = utils.admin_run(["/usr/sbin/purge"])
+        assert rc == 1 and "cancel" in err.lower()
+
+
 # ── dir_size + cleaner scans: one lstat per entry, same semantics ────────
 
 def _legacy_dir_size(path: Path) -> int:

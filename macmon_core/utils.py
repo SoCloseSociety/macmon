@@ -188,6 +188,47 @@ def run_cmd(cmd: list[str], sudo: bool = False, timeout: int = 30) -> tuple[str,
         return "", f"Command not found: {cmd[0]}", -2
 
 
+def admin_run(commands, timeout: int = 120) -> tuple[str, str, int]:
+    """Run privileged command(s) through the macOS NATIVE authorization dialog
+    (``osascript 'do shell script ... with administrator privileges'``), for a
+    USER-INITIATED action only (a GUI button, an explicit CLI step).
+
+    Unlike ``run_cmd(sudo=True)`` -- which uses ``sudo -n`` and must never block
+    an unattended sampler on a prompt nobody can see -- this is the dialog the
+    user expects, and the password they type actually authorizes and RUNS the
+    command. That is the fix for "the security popup asks for my password but
+    nothing happens": a windowed app cannot answer a ``sudo`` TTY prompt, so a
+    privileged action has to go through this authorization path.
+
+    ``commands`` is one argv list, or a list of argv lists run under a SINGLE
+    authorization (joined with ``&&``). Each argument is shell-quoted, then the
+    whole script is AppleScript-escaped -- no value is interpreted as a shell
+    token or an AppleScript token. Returns (stdout, stderr, rc); rc != 0 if the
+    user cancels (osascript -128) or a command fails. Off macOS: falls back to
+    ``run_cmd(sudo=True)`` on the first command (no native dialog exists)."""
+    import shlex
+    from .platform_compat import IS_MAC
+    if commands and isinstance(commands[0], str):
+        commands = [commands]
+    if not IS_MAC:
+        out, err, rc = "", "", 0
+        for c in commands:
+            out, err, rc = run_cmd(list(c), sudo=True, timeout=timeout)
+            if rc != 0:
+                break
+        return out, err, rc
+    shell = " && ".join(" ".join(shlex.quote(str(a)) for a in c) for c in commands)
+    script = 'do shell script "%s" with administrator privileges' % _applescript_escape(shell)
+    try:
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True,
+                           timeout=timeout, stdin=subprocess.DEVNULL)
+        return r.stdout, r.stderr, r.returncode
+    except subprocess.TimeoutExpired:
+        return "", "Authorization timed out (no response to the password dialog)", -1
+    except FileNotFoundError:
+        return "", "osascript not found", -2
+
+
 def dir_size(path: Path) -> int:
     """Total bytes of the regular files under ``path``.
 

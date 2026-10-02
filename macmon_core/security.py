@@ -13,6 +13,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .utils import (
+    admin_run,
     confirm_action,
     console,
     format_size,
@@ -1014,22 +1015,24 @@ def _quarantine_one(p, force_yes: bool = False):
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         pass
 
-    # Add to firewall block list if possible
+    # Add to firewall block list if possible. Modifying the application firewall
+    # needs admin: quarantine is ALWAYS user-initiated (a GUI button or an
+    # explicit CLI run), so it goes through the native authorization dialog
+    # (admin_run) -- one prompt, both commands, and the password the user types
+    # actually applies the block. `sudo -n` here would silently no-op in a
+    # windowed app (the reported "I type my password and nothing happens").
     if exe:
-        _, err1, rc1 = run_cmd(
-            [SOCKETFILTERFW, "--add", exe],
-            sudo=True, timeout=5,
+        _, err, rc = admin_run(
+            [[SOCKETFILTERFW, "--add", exe], [SOCKETFILTERFW, "--blockapp", exe]],
+            timeout=120,
         )
-        _, err2, rc2 = run_cmd(
-            [SOCKETFILTERFW, "--blockapp", exe],
-            sudo=True, timeout=5,
-        )
-        if rc1 == 0 and rc2 == 0:
+        if rc == 0:
             console.print(f"[green]Blocked {exe} in application firewall.[/]")
             console.print("[dim]Note: the macOS application firewall blocks INBOUND connections only.[/]")
+        elif rc == -128 or "cancel" in (err or "").lower():
+            console.print("[yellow]Firewall block cancelled at the authorization prompt (process was still killed).[/]")
         else:
-            err = (err1 or err2 or "unknown error").strip()
-            console.print(f"[red]Failed to block {exe} in application firewall: {err}[/]")
+            console.print(f"[red]Failed to block {exe} in application firewall: {(err or 'unknown error').strip()}[/]")
 
     log_action("security_quarantine", f"{name} (PID {pid})")
 
