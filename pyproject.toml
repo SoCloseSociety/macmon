@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 # package publishes under the product brand. The CLI command stays `macmon`
 # (see [project.scripts]) and the import package stays `macmon_core`.
 name = "aegisforge"
-version = "1.5.1"
+version = "1.6.0"
 description = "Mac Developer Monitor + System Cleaner CLI -- live dashboard, dev garbage collector, security audit, 100% local"
 readme = "README.md"
 license = "MIT"

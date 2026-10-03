@@ -5,7 +5,10 @@ All notable changes to macmon are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.6.0] - 2026-10-03
+
+### Fixed -- the Security quarantine password prompt now works
+- Quarantine's firewall block ran `socketfilterfw` via `sudo -n`, which a windowed app can never answer -- the macOS password dialog appeared and nothing happened. A user-initiated privileged action now goes through the native authorization dialog: `utils.admin_run(commands)` runs one or more argv commands under a SINGLE `osascript "do shell script ... with administrator privileges"`, so the password the user types actually authorizes and RUNS the command. Every argument is shell-quoted then AppleScript-escaped (no value is a shell or AppleScript token); off macOS it falls back to `run_cmd(sudo=True)`. The background sampler still uses `sudo -n` (it must never block on a dialog). The protected-target / never-touch guards are unchanged and run first; a cancelled prompt is reported (the process was still killed). +5 injection/cancel/fallback tests.
 
 ### Changed -- AegisForge.app is now a TRUE native app (no webview)
 - The desktop app is a real **PySide6 / Qt** application (native widgets), not a WKWebView wrapper, cross-platform (macOS + Windows). New package `macmon_core/app_native/`: `theme.py` (QSS built from the `aegis.C[]` / `--af-*` brand palette, dark + light with an Auto/Dark/Light toggle persisted via `QSettings`), `widgets.py` (cards, vital bars, SVG-free ring, tables with the `PROTECTED` badge, stepper, confirm dialog, toasts, opt-in switches), `sections.py` (the same seven sections + funnels), `window.py` (sidebar + `QStackedWidget` + nav), `workers.py` (a `QThreadPool` model -- the UI thread never calls the engine; every read/action runs on a pool thread and returns via a queued `Signal`).
@@ -196,7 +199,8 @@ A Fable adversarial audit of the app, verified on real Windows (Python 3.14) and
 ### Added
 - Initial public release: a terminal-native macOS system monitor and cleaner -- 30 commands including a live TUI dashboard, process manager, system cleaner, dev garbage collector, security scanner, Docker manager, disk analyzer, duplicate finder, and an autopilot daemon. 100% local, zero telemetry, MIT licensed.
 
-[Unreleased]: https://github.com/SoCloseSociety/macmon/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/SoCloseSociety/macmon/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/SoCloseSociety/macmon/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/SoCloseSociety/macmon/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/SoCloseSociety/macmon/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/SoCloseSociety/macmon/compare/v1.3.0...v1.4.0
