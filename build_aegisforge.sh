@@ -71,6 +71,30 @@ rm -rf "build/$APP_NAME" "dist/$APP_NAME.app"
 APP="dist/$APP_NAME.app"
 [ -d "$APP" ] || { echo "build failed: $APP not produced"; exit 1; }
 
+# 3b. Slim the bundle. `--collect-all PySide6` pulls ALL of Qt (QtWebEngineCore
+# alone is ~285 MB, plus Qt3D / Quick / Qml / Multimedia / Charts / Designer, the
+# QML runtime, the Assistant/Designer/Linguist dev apps ...). A Qt WIDGETS app
+# imports none of it, so prune every framework, Python binding and plugin outside
+# a small keep-list -> ~650 MB down to ~185 MB. Keep QtCore/Gui/Widgets (+ DBus,
+# Svg, Network, PrintSupport, OpenGL) and the cocoa platform plugin. Done BEFORE
+# codesign so the signature covers the slimmed tree.
+say "Slimming PySide6 (dropping unused Qt modules: ~650 MB -> ~185 MB)"
+PS="$APP/Contents/Frameworks/PySide6"
+KEEP='QtCore|QtGui|QtWidgets|QtDBus|QtSvg|QtSvgWidgets|QtNetwork|QtPrintSupport|QtOpenGL|QtOpenGLWidgets'
+for f in "$PS"/Qt/lib/*.framework; do
+  b="$(basename "$f" .framework)"; echo "$b" | grep -qE "^($KEEP)\$" || rm -rf "$f"
+done
+find "$APP" \( -name "Qt*.abi3.so" -o -name "Qt*.pyi" \) | while read -r f; do
+  b="$(basename "$f" | sed 's/\..*//')"; echo "$b" | grep -qE "^($KEEP)\$" || rm -f "$f"
+done
+rm -rf "$PS"/Qt/qml "$APP"/Contents/Resources/PySide6/Qt/qml "$PS"/*.app \
+       "$APP"/Contents/Resources/PySide6/*.app 2>/dev/null || true
+find "$APP" -name "QtWebEngineProcess.app" -exec rm -rf {} + 2>/dev/null || true
+for d in "$PS"/Qt/plugins/*; do
+  bn="$(basename "$d")"
+  echo "$bn" | grep -qE "^(platforms|styles|imageformats|iconengines|generic|platforminputcontexts)$" || rm -rf "$d"
+done
+
 # 4. A normal windowed app (Dock icon + a native pywebview window), like the
 # fleet's Sentinel -- NOT an LSUIElement menu-bar-only agent (that showed no
 # window, so the app looked like it "didn't open").

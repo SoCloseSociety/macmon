@@ -5,6 +5,12 @@ All notable changes to macmon are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed -- AegisForge.app bundle is ~3.5x smaller
+- `build_aegisforge.sh` now slims the frozen app: `--collect-all PySide6` bundled ALL of Qt (QtWebEngineCore alone ~285 MB, plus Qt3D / Quick / Qml / Multimedia / Charts / the Assistant/Designer/Linguist dev apps + the QML runtime), none of which a Qt Widgets app imports. The build prunes every framework, Python binding and plugin outside a keep-list (QtCore/Gui/Widgets + DBus/Svg/Network/PrintSupport/OpenGL + the cocoa platform plugin) before codesign: **~650 MB -> ~185 MB**. Verified the slimmed app still launches with all seven sections.
+- The bundle also carries its real version now (`CFBundleShortVersionString`/`CFBundleVersion` stamped from `macmon.__version__`; PyInstaller left it 0.0.0).
+
 ## [1.6.0] - 2026-10-03
 
 ### Fixed -- the Security quarantine password prompt now works
