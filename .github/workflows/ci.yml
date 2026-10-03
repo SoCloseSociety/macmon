@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege: the suite only reads the checkout, never writes to the repo
+# or packages. A compromised dependency in a job cannot use GITHUB_TOKEN to push.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: ${{ matrix.os }} / py${{ matrix.python }}
