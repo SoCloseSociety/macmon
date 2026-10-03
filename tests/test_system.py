@@ -25,18 +25,18 @@ from macmon_core import (
 
 class TestParseLsofLine:
     def test_simple_ipv4_listen(self):
-        line = "rapportd  728  neo   8u  IPv4  0x1234  0t0  TCP  *:49152  (LISTEN)"
+        line = "rapportd  728  dev   8u  IPv4  0x1234  0t0  TCP  *:49152  (LISTEN)"
         process, pid, user, name_col, state = security._parse_lsof_line(line)
         assert process == "rapportd"
         assert pid == "728"
-        assert user == "neo"
+        assert user == "dev"
         assert name_col == "*:49152"
         assert state == "(LISTEN)"
 
     def test_command_name_with_spaces(self):
         # +c 0 can emit spaced command names; the parser anchors on the TYPE
         # token so the fields do not shift.
-        line = "Google Chrome  1009  neo  40u  IPv4  0xabcd  0t0  TCP  127.0.0.1:64003  (LISTEN)"
+        line = "Google Chrome  1009  dev  40u  IPv4  0xabcd  0t0  TCP  127.0.0.1:64003  (LISTEN)"
         process, pid, user, name_col, state = security._parse_lsof_line(line)
         assert process == "Google Chrome"
         assert pid == "1009"

@@ -36,7 +36,7 @@ def _ok(stdout="", stderr="", rc=0):
     return types.SimpleNamespace(stdout=stdout, stderr=stderr, returncode=rc)
 
 
-def row(pid, name, cmd="", cpu=0.0, rss=0, ct=1000.0, ppid=1, exe="", user="neo"):
+def row(pid, name, cmd="", cpu=0.0, rss=0, ct=1000.0, ppid=1, exe="", user="dev"):
     """One aegis.scan() row."""
     return {"pid": pid, "ppid": ppid, "name": name, "cmd": cmd or exe, "exe": exe, "ct": float(ct),
             "cpu": cpu, "rss": rss, "user": user, "status": "running", "tty": None}
@@ -270,7 +270,7 @@ class TestCleanerScansWalker:
 
 # ── sentinel sampler: one process-table pass ─────────────────────────────
 
-CLAUDE = "/Users/neo/.vscode/extensions/anthropic.claude-code-2.1.281-darwin-arm64/resources/native-binary/claude"
+CLAUDE = "/Users/dev/.vscode/extensions/anthropic.claude-code-2.1.281-darwin-arm64/resources/native-binary/claude"
 MB = 1024 * 1024
 
 TABLE = [
@@ -278,7 +278,7 @@ TABLE = [
     row(100, "claude", cmd=f"{CLAUDE} --resume", cpu=0.2, rss=300 * MB, ct=5000.0),
     row(101, "claude", cmd=f"{CLAUDE}", cpu=12.0, rss=200 * MB, ct=6000.0),
     row(102, "codex", cmd="/Applications/ChatGPT.app/Contents/openai.chatgpt codex serve", rss=50 * MB),
-    row(103, "node", cmd="/usr/local/bin/node /Users/neo/tools/tradingview-mcp/server.js", rss=70 * MB),
+    row(103, "node", cmd="/usr/local/bin/node /Users/dev/tools/tradingview-mcp/server.js", rss=70 * MB),
     row(104, "com.apple.Virtualization.VirtualMachine",
         cmd="/System/Library/com.apple.Virtualization.VirtualMachine --vm", rss=int(3.5e9)),
     row(105, "qemu-system-aarch64", cmd="qemu com.docker.virtualization", rss=int(1.0e9)),
@@ -428,7 +428,7 @@ class TestSentinelSubprocessHygiene:
 
 class TestPlistEscaping:
     def test_sentinel_plist_round_trips_special_characters(self):
-        args = ["/Users/neo/Dev & Co/.venv/bin/python", "/Users/neo/<repo>/macmon.py", 'a"b', "sentinel", "--sample"]
+        args = ["/Users/dev/Dev & Co/.venv/bin/python", "/Users/dev/<repo>/macmon.py", 'a"b', "sentinel", "--sample"]
         data = plistlib.loads(sentinel._plist("co.soclose.macmon.monitor", args, 60).encode())
         assert data["ProgramArguments"] == args
         assert data["Label"] == "co.soclose.macmon.monitor" and data["StartInterval"] == 60

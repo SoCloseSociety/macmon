@@ -37,15 +37,18 @@ from macmon_core.aegis import Finding
 NOW = 1_800_000_000.0
 CFG = dict(sentinel.DEFAULTS)
 
-PUPPETEER = ("/Users/neo/.cache/puppeteer/chrome/mac_arm-140.0.7339.82/chrome-mac-arm64/"
+# All paths are decorative /Users/dev fixtures; the home-anchored never-touch
+# prefixes (~/.claude, ~/.vscode, ...) are pinned to /users/dev/... by the
+# autouse _identity fixture, so these run identically on any account/OS.
+PUPPETEER = ("/Users/dev/.cache/puppeteer/chrome/mac_arm-140.0.7339.82/chrome-mac-arm64/"
              "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing")
-PLAYWRIGHT = "/Users/neo/Library/Caches/ms-playwright/chromium-1187/chrome-mac/Chromium.app/Contents/MacOS/Chromium"
+PLAYWRIGHT = "/Users/dev/Library/Caches/ms-playwright/chromium-1187/chrome-mac/Chromium.app/Contents/MacOS/Chromium"
 SYS_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-NODE = "/Users/neo/.nvm/versions/node/v22.22.0/bin/node"
-PY = "/Users/neo/proj/.venv/bin/python3.12"
+NODE = "/Users/dev/.nvm/versions/node/v22.22.0/bin/node"
+PY = "/Users/dev/proj/.venv/bin/python3.12"
 
 
-def P(pid, ppid, name, cmd="", exe="", cpu=0.0, rss=0, ct=1000.0, user="neo", status="running", tty=None):
+def P(pid, ppid, name, cmd="", exe="", cpu=0.0, rss=0, ct=1000.0, user="dev", status="running", tty=None):
     """One process-table row (same keys as aegis.scan())."""
     return {"pid": pid, "ppid": ppid, "name": name, "cmd": cmd or exe, "exe": exe, "ct": float(ct),
             "cpu": cpu, "rss": rss, "user": user, "status": status, "tty": tty}
@@ -72,9 +75,9 @@ def rows(series, key="swap_gb", start=NOW - 9 * 60, step=60, **extra):
 def _identity(monkeypatch):
     # Pin the identity the never-touch set compares against, and the home dir
     # the protected-config prefixes derive from (the tests run on any account).
-    monkeypatch.setattr(aegis, "_ME", "neo")
+    monkeypatch.setattr(aegis, "_ME", "dev")
     monkeypatch.setattr(aegis, "_HOME_PROTECTED",
-                        tuple(f"/users/neo/{d}/" for d in (".claude", ".codex", ".cursor", ".vscode", ".ollama", ".macmon")))
+                        tuple(f"/users/dev/{d}/" for d in (".claude", ".codex", ".cursor", ".vscode", ".ollama", ".macmon")))
 
 
 @pytest.fixture
@@ -136,7 +139,7 @@ class TestFamilies:
         assert aegis.family_of(P(5, 1, "Google Chrome", exe=SYS_CHROME)) is None
 
     def test_android_emulator_named_headless_is_not_a_browser(self):
-        exe = "/Users/neo/Library/Android/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64-headless"
+        exe = "/Users/dev/Library/Android/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64-headless"
         p = P(7, 1, "qemu-system-aarch64-headless", cmd=f"{exe} -avd Pixel_8", exe=exe)
         assert aegis.family_of(p) is None
         assert aegis.never_touch(p) is not None  # a VM is a live workload
@@ -155,16 +158,16 @@ _PROTECTED = [
     ("own process", P(os.getpid(), 1, "python3", exe=PY)),
     ("system-critical name", P(777, 1, "WindowServer", exe="/System/Library/PrivateFrameworks/SkyLight.framework/WindowServer")),
     ("VSCode helper", P(700, 690, "Code Helper (Renderer)", cmd="/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer) --type=renderer", exe="/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)")),
-    ("Claude Code session", P(701, 1, "claude", cmd="/Users/neo/.vscode/extensions/anthropic.claude-code-2.1.281-darwin-arm64/resources/native-binary/claude", exe="/Users/neo/.vscode/extensions/anthropic.claude-code-2.1.281-darwin-arm64/resources/native-binary/claude")),
-    ("Claude native host in Chrome", P(702, 636, "node", cmd=f"{NODE} /Users/neo/.nvm/versions/node/v22.22.0/lib/node_modules/@anthropic-ai/claude-code/cli.js --chrome-native-host", exe=NODE)),
-    ("Claude hook under ~/.claude", P(703, 1, "node", cmd=f"{NODE} /Users/neo/.claude/hooks/notify.js", exe=NODE)),
-    ("codex", P(704, 1, "codex", cmd="/Users/neo/.vscode/extensions/openai.chatgpt-26.917.62051-darwin-arm64/bin/macos/codex app-server", exe="/Users/neo/.vscode/extensions/openai.chatgpt-26.917.62051-darwin-arm64/bin/macos/codex")),
-    ("MCP server", P(705, 1, "node", cmd=f"{NODE} /Users/neo/tools/tradingview-mcp/server.js", exe=NODE)),
-    ("VSCode extension helper", P(706, 1, "pet", exe="/Users/neo/.vscode/extensions/ms-python.vscode-python-envs-1.36.0-darwin-arm64/pet")),
+    ("Claude Code session", P(701, 1, "claude", cmd="/Users/dev/.vscode/extensions/anthropic.claude-code-2.1.281-darwin-arm64/resources/native-binary/claude", exe="/Users/dev/.vscode/extensions/anthropic.claude-code-2.1.281-darwin-arm64/resources/native-binary/claude")),
+    ("Claude native host in Chrome", P(702, 636, "node", cmd=f"{NODE} /Users/dev/.nvm/versions/node/v22.22.0/lib/node_modules/@anthropic-ai/claude-code/cli.js --chrome-native-host", exe=NODE)),
+    ("Claude hook under ~/.claude", P(703, 1, "node", cmd=f"{NODE} /Users/dev/.claude/hooks/notify.js", exe=NODE)),
+    ("codex", P(704, 1, "codex", cmd="/Users/dev/.vscode/extensions/openai.chatgpt-26.917.62051-darwin-arm64/bin/macos/codex app-server", exe="/Users/dev/.vscode/extensions/openai.chatgpt-26.917.62051-darwin-arm64/bin/macos/codex")),
+    ("MCP server", P(705, 1, "node", cmd=f"{NODE} /Users/dev/tools/tradingview-mcp/server.js", exe=NODE)),
+    ("VSCode extension helper", P(706, 1, "pet", exe="/Users/dev/.vscode/extensions/ms-python.vscode-python-envs-1.36.0-darwin-arm64/pet")),
     ("ollama", P(710, 1, "ollama", cmd="/opt/homebrew/bin/ollama serve", exe="/opt/homebrew/Cellar/ollama/0.17.0/bin/ollama")),
     ("ollama runner", P(711, 710, "ollama", cmd="/opt/homebrew/bin/ollama runner --model x", exe="/opt/homebrew/bin/ollama")),
-    ("sentinel sampler", P(720, 1, "Python", cmd=f"{PY} /Users/neo/dev/macmoncli/macmon.py sentinel --sample", exe=PY)),
-    ("NeoBot", P(721, 1, "python3", cmd="python3 /root/SAAS/neobot/bot/main.py", exe="/usr/bin/python3")),
+    ("sentinel sampler", P(720, 1, "Python", cmd=f"{PY} /Users/dev/dev/macmoncli/macmon.py sentinel --sample", exe=PY)),
+    ("NeoBot", P(721, 1, "python3", cmd="python3 /srv/app/neobot/main.py", exe="/usr/bin/python3")),
     ("Sentinel body", P(722, 1, "Sentinel", exe="/Applications/Sentinel.app/Contents/MacOS/Sentinel")),
     ("WireGuard", P(730, 1, "wireguard-go", cmd="wireguard-go utun3", exe="/opt/homebrew/bin/wireguard-go")),
     ("sshd", P(731, 1, "sshd", exe="/usr/sbin/sshd")),
@@ -197,7 +200,7 @@ class TestNeverTouch:
     @pytest.mark.parametrize("label,proc", [
         ("leaked puppeteer Chrome", P(5000, 1, "Google Chrome for Testing", cmd=f"{PUPPETEER} --headless=new", exe=PUPPETEER)),
         ("headless system Chrome (automation instance)", P(5001, 1, "Google Chrome", cmd=f"{SYS_CHROME} --no-startup-window --headless=new", exe=SYS_CHROME)),
-        ("dev server in a project worktree", P(5002, 1, "node", cmd=f"{NODE} /Users/neo/Documents/proj/.claude/worktrees/x/node_modules/.bin/vite --port 5173", exe=NODE)),
+        ("dev server in a project worktree", P(5002, 1, "node", cmd=f"{NODE} /Users/dev/Documents/proj/.claude/worktrees/x/node_modules/.bin/vite --port 5173", exe=NODE)),
         ("next-server", P(5003, 1, "next-server (v15.5.2)", cmd=f"{NODE} next-server", exe=NODE)),
         ("python worker", P(5004, 1, "python3.12", cmd=f"{PY} worker.py", exe=PY)),
     ], ids=lambda x: x if isinstance(x, str) else "")
@@ -217,7 +220,7 @@ class TestNeverTouch:
 
 def _t1(child_cpu=0.0):
     return [LAUNCHD(), P(3000, 900, "zsh", exe="/bin/zsh"),
-            P(4000, 3000, "node", cmd=f"{NODE} /Users/neo/proj/shoot.mjs", exe=NODE, cpu=30.0),
+            P(4000, 3000, "node", cmd=f"{NODE} /Users/dev/proj/shoot.mjs", exe=NODE, cpu=30.0),
             P(5000, 4000, "Google Chrome for Testing", cmd=f"{PUPPETEER} --headless=new", exe=PUPPETEER, cpu=child_cpu)]
 
 
@@ -259,7 +262,7 @@ class TestLineageProof:
     def test_parent_still_alive_means_no_proof(self):
         astate = {}
         aegis.observe_table(_t1(), astate, CFG, 12)
-        alive = P(4000, 3000, "node", cmd=f"{NODE} /Users/neo/proj/shoot.mjs", exe=NODE)  # same create time
+        alive = P(4000, 3000, "node", cmd=f"{NODE} /Users/dev/proj/shoot.mjs", exe=NODE)  # same create time
         forge = aegis.observe_table(_t2(extra=[alive]), astate, CFG, 12)
         assert forge["leaks"] == []
 
@@ -299,7 +302,7 @@ class TestLineageProof:
 
 def _swarm_table(n, child_ppid=4000, child_cpu=5.0):
     t = [LAUNCHD(), P(3000, 900, "zsh", exe="/bin/zsh"),
-         P(4000, 3000, "node", cmd=f"{NODE} /Users/neo/proj/shoot.mjs", exe=NODE, cpu=40.0, rss=200 << 20)]
+         P(4000, 3000, "node", cmd=f"{NODE} /Users/dev/proj/shoot.mjs", exe=NODE, cpu=40.0, rss=200 << 20)]
     for i in range(n):
         t.append(P(5000 + i, child_ppid, "Google Chrome for Testing", cmd=f"{PUPPETEER} --headless=new --remote-debugging-port=0",
                    exe=PUPPETEER, cpu=child_cpu, rss=150 << 20))
@@ -328,7 +331,7 @@ class TestObserveRecord:
         t += [P(100 + i, 1, "Code Helper (Plugin)", exe="/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)") for i in range(30)]
         t += [P(200 + i, 1, "distnoted", exe="/usr/sbin/distnoted") for i in range(20)]
         t += [P(300 + i, 1, "zsh", exe="/bin/zsh") for i in range(28)]
-        t += [P(400 + i, 1, "esbuild", exe="/Users/neo/proj/node_modules/@esbuild/darwin-arm64/bin/esbuild") for i in range(9)]
+        t += [P(400 + i, 1, "esbuild", exe="/Users/dev/proj/node_modules/@esbuild/darwin-arm64/bin/esbuild") for i in range(9)]
         t += _swarm_table(12)[3:]
         assert aegis.name_counts(t, 8) == {"esbuild": 9}
 
@@ -553,7 +556,7 @@ class TestReapInvariants:
         # idle streak cannot tell it from a hung leak, so AUTO leaves it for the human.
         # the literal audit scenario: argv carries only the RELATIVE script name
         leak = {"pid": 5000, "ppid": 1, "name": "python3.12", "cmd": "python scheduler.py",
-                "exe": "python", "ct": 1000.0, "cpu": 0.0, "rss": 0, "user": "neo",
+                "exe": "python", "ct": 1000.0, "cpu": 0.0, "rss": 0, "user": "dev",
                 "status": "running", "tty": None, "proof": "parent 4000 exited",
                 "busy": False, "family": "python"}
         cfg = {**CFG, "auto_reap_orphans": True, "reap_idle_samples": 1}
@@ -587,7 +590,7 @@ class TestReapInvariants:
         cfg = {**CFG, "auto_reap_orphans": True, "reap_idle_samples": 1}
         astate = {}
         aegis.observe_table(_swarm_table(10), astate, cfg, 12)
-        t = [LAUNCHD(), P(4000, 1, "node", cmd=f"{NODE} /Users/neo/proj/shoot.mjs", exe=NODE, cpu=0.0)]
+        t = [LAUNCHD(), P(4000, 1, "node", cmd=f"{NODE} /Users/dev/proj/shoot.mjs", exe=NODE, cpu=0.0)]
         t += _swarm_table(10, child_cpu=8.0)[3:]           # children still rendering
         forge = aegis.observe_table(t, astate, cfg, 12)
         assert [L["pid"] for L in forge["leaks"]] == [4000] and forge["leaks"][0]["busy"] is True
@@ -597,10 +600,10 @@ class TestReapInvariants:
         t1 = [LAUNCHD(), P(600, 1, "Code", exe="/Applications/Visual Studio Code.app/Contents/MacOS/Electron"),
               P(3000, 900, "zsh", exe="/bin/zsh"), P(3100, 900, "brew", exe="/opt/homebrew/bin/brew"),
               P(700, 600, "Code Helper (Renderer)", exe="/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)"),
-              P(701, 3000, "claude", exe="/Users/neo/.vscode/extensions/anthropic.claude-code-2.1.281-darwin-arm64/resources/native-binary/claude"),
-              P(702, 3000, "node", cmd=f"{NODE} /Users/neo/tools/tradingview-mcp/server.js", exe=NODE),
+              P(701, 3000, "claude", exe="/Users/dev/.vscode/extensions/anthropic.claude-code-2.1.281-darwin-arm64/resources/native-binary/claude"),
+              P(702, 3000, "node", cmd=f"{NODE} /Users/dev/tools/tradingview-mcp/server.js", exe=NODE),
               P(710, 3100, "ollama", cmd="/opt/homebrew/bin/ollama serve", exe="/opt/homebrew/bin/ollama"),
-              P(720, 3000, "next-server (v15)", cmd=f"{NODE} /Users/neo/proj/node_modules/next/dist/server/lib/start-server.js", exe=NODE, tty="/dev/ttys001")]
+              P(720, 3000, "next-server (v15)", cmd=f"{NODE} /Users/dev/proj/node_modules/next/dist/server/lib/start-server.js", exe=NODE, tty="/dev/ttys001")]
         astate = {}
         aegis.observe_table(t1, astate, CFG, 12)
         t2 = [LAUNCHD()] + [dict(p, ppid=1) for p in t1 if p["pid"] in (700, 701, 702, 710, 720)]

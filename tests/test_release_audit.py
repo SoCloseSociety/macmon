@@ -122,11 +122,11 @@ def _install_process_table(monkeypatch, procs):
 # ── 1. sweep spares live/listening servers ───────────────────────────────
 
 class TestSweepSparesLiveServers:
-    NODE_EXE = "/Users/neo/.nvm/versions/node/v20.0.0/bin/node"
+    NODE_EXE = "/Users/dev/.nvm/versions/node/v20.0.0/bin/node"
 
     def _orphan(self, pid, conns, killed):
         return FakeProc(pid, "node", ppid=1, exe=self.NODE_EXE, conns=conns, killed=killed,
-                        cmdline=["node", "/Users/neo/proj/server.js"])
+                        cmdline=["node", "/Users/dev/proj/server.js"])
 
     def test_listening_orphan_is_spared_and_reported(self, monkeypatch):
         killed = []
@@ -147,7 +147,7 @@ class TestSweepSparesLiveServers:
         # Same shape as a leaked orphan, but its cmdline is an MCP server: a
         # live agent session by AegisForge's judgment -> never signalled.
         mcp = FakeProc(HIGH_PID, "node", ppid=1, exe=self.NODE_EXE, killed=killed,
-                       cmdline=["node", "/Users/neo/tools/mcp-server/index.js"])
+                       cmdline=["node", "/Users/dev/tools/mcp-server/index.js"])
         _install_process_table(monkeypatch, [mcp])
         monkeypatch.setattr(processes, "log_action", lambda *a, **k: None)
         buf = _capture(monkeypatch, processes)
@@ -546,13 +546,13 @@ class TestStartupPersistentDisable:
         return calls
 
     def test_disable_agent_boots_out_and_records_the_override(self, monkeypatch, calls):
-        monkeypatch.setattr(startup, "_find_plist", lambda label: "/Users/neo/Library/LaunchAgents/com.foo.plist")
+        monkeypatch.setattr(startup, "_find_plist", lambda label: "/Users/dev/Library/LaunchAgents/com.foo.plist")
         startup._disable_item("com.foo")
         assert ["launchctl", "bootout", "gui/501/com.foo"] in calls
         assert ["launchctl", "disable", "gui/501/com.foo"] in calls
 
     def test_enable_agent_clears_the_override_before_bootstrap(self, monkeypatch, calls):
-        plist = "/Users/neo/Library/LaunchAgents/com.foo.plist"
+        plist = "/Users/dev/Library/LaunchAgents/com.foo.plist"
         monkeypatch.setattr(startup, "_find_plist", lambda label: plist)
         startup._enable_item("com.foo")
         assert calls.index(["launchctl", "enable", "gui/501/com.foo"]) < calls.index(["launchctl", "bootstrap", "gui/501", plist])
@@ -570,7 +570,7 @@ class TestStartupPersistentDisable:
         monkeypatch.setattr(startup, "run_cmd", run_cmd)
         monkeypatch.setattr(startup, "_get_uid", lambda: 501)
         monkeypatch.setattr(startup, "_plist_label", lambda plist: "com.foo")
-        monkeypatch.setattr(startup, "_find_plist", lambda label: "/Users/neo/Library/LaunchAgents/com.foo.plist")
+        monkeypatch.setattr(startup, "_find_plist", lambda label: "/Users/dev/Library/LaunchAgents/com.foo.plist")
         monkeypatch.setattr(startup, "log_action", lambda *a, **k: None)
         buf = _capture(monkeypatch, startup)
         startup._disable_item("com.foo")
@@ -671,14 +671,14 @@ class TestAegisHomeProtectedIsOsAgnostic:
         p = {"pid": HIGH_PID, "ppid": 1, "name": "node", "cmd": cmd, "exe": "", "user": ""}
         assert aegis.never_touch(p) == "protected (~/.claude)"
 
-    @pytest.mark.parametrize("pref", ["/users/neo/.claude/", "c:\\users\\neo\\.claude\\"])
+    @pytest.mark.parametrize("pref", ["/users/dev/.claude/", "c:\\users\\dev\\.claude\\"])
     def test_reason_names_the_directory_on_both_layouts(self, pref):
         assert aegis._home_protected_name(pref) == ".claude"
 
     @pytest.mark.skipif(sys.platform == "win32", reason="posix layout")
     def test_never_touch_reason_is_unchanged_on_posix(self, monkeypatch):
-        monkeypatch.setattr(aegis, "_ME", "neo")
-        monkeypatch.setattr(aegis, "_HOME_PROTECTED", ("/users/neo/.claude/",))
-        p = {"pid": HIGH_PID, "ppid": 1, "name": "node", "cmd": "node /Users/neo/.claude/hooks/notify.js",
-             "exe": "/Users/neo/.nvm/versions/node/v20/bin/node", "user": "neo"}
+        monkeypatch.setattr(aegis, "_ME", "dev")
+        monkeypatch.setattr(aegis, "_HOME_PROTECTED", ("/users/dev/.claude/",))
+        p = {"pid": HIGH_PID, "ppid": 1, "name": "node", "cmd": "node /Users/dev/.claude/hooks/notify.js",
+             "exe": "/Users/dev/.nvm/versions/node/v20/bin/node", "user": "dev"}
         assert aegis.never_touch(p) == "protected (~/.claude)"

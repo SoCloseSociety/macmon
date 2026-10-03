@@ -133,7 +133,7 @@ class TestHostGate:
 
     @pytest.mark.parametrize("host", ["evil.example.com", "evil.example.com:9137", "",
                                       None, "127.0.0.1.evil.com", "localhost.evil.com",
-                                      "[::1]:9137", "0.0.0.0", "10.8.0.2:9137"])
+                                      "[::1]:9137", "0.0.0.0", "10.0.0.2:9137"])
     def test_host_allowed_refuses_anything_else(self, host):
         assert app_webui.host_allowed(host) is False
 
@@ -499,16 +499,16 @@ class TestReadEndpoints:
             {"pid": 1, "ppid": 0, "name": "launchd", "cpu": 0.1, "ram": 10, "status": "running",
              "created": 1.0, "user": "root", "category": "system"},
             {"pid": 4242, "ppid": 1, "name": "node", "cpu": 12.5, "ram": 2048, "status": "running",
-             "created": 100.0, "user": "neo", "category": "node"},
+             "created": 100.0, "user": "dev", "category": "node"},
             {"pid": 4243, "ppid": 1, "name": "<img src=x onerror=alert(1)>", "cpu": 1.0, "ram": 1,
-             "status": "running", "created": 100.0, "user": "neo", "category": "other"}])
+             "status": "running", "created": 100.0, "user": "dev", "category": "other"}])
         monkeypatch.setattr(security, "_security_checks", lambda progress=None: (85, [
             {"name": "macOS Firewall", "status": "fail", "detail": "off", "fix_hint": "turn it on"},
             {"name": "SIP", "status": "pass", "detail": "enabled"}]))
         monkeypatch.setattr(docker_mgr, "_docker_available", lambda: True)
-        monkeypatch.setattr(docker_mgr, "_overview_data", lambda: {"disk_usage": [], "running": [{"name": "neobot"}],
+        monkeypatch.setattr(docker_mgr, "_overview_data", lambda: {"disk_usage": [], "running": [{"name": "app"}],
                                                                    "stopped": [], "dangling_images": 3, "volumes": 2})
-        monkeypatch.setattr(docker_mgr, "_containers_data", lambda: [{"name": "neobot", "state": "running"}])
+        monkeypatch.setattr(docker_mgr, "_containers_data", lambda: [{"name": "app", "state": "running"}])
         monkeypatch.setattr(docker_mgr, "_images_data", lambda: [{"repository": "<none>", "tag": "<none>"}])
         monkeypatch.setattr(docker_mgr, "_volumes_data", lambda: [{"name": "v1", "in_use": True}])
         monkeypatch.setattr(disk, "_disk_entries", lambda base: [
@@ -551,7 +551,7 @@ class TestReadEndpoints:
     def test_docker(self, quiet):
         d = json.loads(_get(quiet, "api/docker")[1])
         assert d["available"] is True and d["overview"]["dangling_images"] == 3
-        assert d["containers"][0]["name"] == "neobot" and d["volumes"][0]["in_use"] is True
+        assert d["containers"][0]["name"] == "app" and d["volumes"][0]["in_use"] is True
 
     def test_docker_absent(self, quiet, monkeypatch):
         from macmon_core import docker_mgr
