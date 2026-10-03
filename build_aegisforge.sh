@@ -77,6 +77,13 @@ APP="dist/$APP_NAME.app"
 PLIST="$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Delete :LSUIElement" "$PLIST" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Set :CFBundleName AegisForge" "$PLIST" 2>/dev/null || true
+# Stamp the real version (PyInstaller leaves it 0.0.0) from macmon.__version__,
+# BEFORE codesign so the signature covers it. Set-or-Add for either plist shape.
+VERSION="$("$PY" -c 'import macmon; print(macmon.__version__)' 2>/dev/null || echo 0.0.0)"
+for key in CFBundleShortVersionString CFBundleVersion; do
+  /usr/libexec/PlistBuddy -c "Set :$key $VERSION" "$PLIST" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Add :$key string $VERSION" "$PLIST" 2>/dev/null || true
+done
 
 # 5. Ad-hoc codesign (no Apple Dev ID here; enough to launch locally).
 say "Ad-hoc codesign"
