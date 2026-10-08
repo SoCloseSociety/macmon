@@ -1,10 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">AegisForge</string>
+
     <string name="widget_health_label">AegisForge -- Health</string>
     <string name="widget_health_desc">This phone\'s health at a glance: battery, storage, memory, network.</string>
+    <string name="widget_metric_label">AegisForge -- Metric</string>
+    <string name="widget_metric_desc">One metric, big: battery, storage, memory or network.</string>
+
     <string name="main_title">AegisForge</string>
     <string name="main_tag">device health, on your home screen</string>
-    <string name="main_body">AegisForge reads this phone\'s own health -- battery, storage, memory, network and screen-lock state -- and shows it in a home-screen widget, in the Sentinel House look.\n\nNothing leaves the device: there is no account, no network call, no tracking. The widget refreshes itself periodically and when you tap it.\n\nTo add it: long-press your home screen, choose Widgets, find AegisForge, and drop the size you want (small, medium or large).</string>
+    <string name="main_body">AegisForge reads this phone\'s own health -- battery, storage, memory, network and screen-lock state -- and shows it in a home-screen widget, in the Sentinel House look.\n\nNothing leaves the device: there is no account, no network call, no tracking. The widget refreshes itself periodically and when you tap it.\n\nTo add it: long-press your home screen, choose Widgets, find AegisForge, and drop the size you want (small, medium or large). You pick a style -- and, for a metric widget, which metric -- when you place it.</string>
     <string name="main_refresh">Refresh now</string>
+
+    <!-- config screen -->
+    <string name="cfg_title">Add AegisForge widget</string>
+    <string name="cfg_style">Style</string>
+    <string name="cfg_metric">Metric</string>
+    <string name="cfg_lunar">Lunar</string>
+    <string name="cfg_soft">Soft</string>
+    <string name="cfg_glass">Glass</string>
+    <string name="cfg_battery">Battery</string>
+    <string name="cfg_storage">Storage</string>
+    <string name="cfg_memory">Memory</string>
+    <string name="cfg_network">Network</string>
+    <string name="cfg_add">Add to home screen</string>
 </resources>

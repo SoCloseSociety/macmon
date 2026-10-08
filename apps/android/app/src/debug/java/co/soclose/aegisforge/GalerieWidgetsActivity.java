@@ -14,11 +14,10 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 /**
- * DEBUG-ONLY. A launcher-free gallery that renders the widget at every size by
- * applying the exact same RemoteViews the provider builds, into framed cells.
- * Used for deterministic screenshots on an emulator (screencap), proving each
- * size renders rather than failing silently in a real launcher picker. Declared
- * exported only in src/debug/AndroidManifest.xml, so it never ships in release.
+ * DEBUG-ONLY. A launcher-free gallery that renders the widget at every size,
+ * style and metric by applying the exact RemoteViews the providers build, into
+ * framed cells. Used for deterministic screenshots on an emulator (screencap),
+ * proving each combination renders. Exported only in src/debug/AndroidManifest.xml.
  */
 public class GalerieWidgetsActivity extends Activity {
 
@@ -33,16 +32,35 @@ public class GalerieWidgetsActivity extends Activity {
         scroll.addView(col);
 
         int id = 990000;
-        addCell(col, "S  170x170", WidgetRender.Size.S, 170, 170, id++);
-        addCell(col, "S-tall  170x300 (-> L card)", WidgetRender.Size.L, 170, 300, id++);
-        addCell(col, "M  340x170", WidgetRender.Size.M, 340, 170, id++);
-        addCell(col, "L  340x340", WidgetRender.Size.L, 340, 340, id++);
+        // Health, the three styles, medium
+        health(col, "Health M  Lunar", Styles.Style.LUNAR, 340, 170, id++);
+        health(col, "Health M  Soft", Styles.Style.SOFT, 340, 170, id++);
+        health(col, "Health M  Glass", Styles.Style.GLASS, 340, 170, id++);
+        health(col, "Health L  Lunar", Styles.Style.LUNAR, 340, 300, id++);
+        // Metric widgets, small
+        metric(col, "Battery S  Lunar", Styles.Style.LUNAR, Styles.Metric.BATTERY, id++);
+        metric(col, "Storage S  Lunar", Styles.Style.LUNAR, Styles.Metric.STORAGE, id++);
+        metric(col, "Memory S  Soft", Styles.Style.SOFT, Styles.Metric.MEMORY, id++);
+        metric(col, "Network S  Glass", Styles.Style.GLASS, Styles.Metric.NETWORK, id++);
 
         setContentView(scroll);
     }
 
-    private void addCell(LinearLayout col, String caption, WidgetRender.Size size,
-                         int wdp, int hdp, int fakeId) {
+    private void health(LinearLayout col, String cap, Styles.Style style, int w, int h, int id) {
+        cell(col, cap, WidgetRender.render(this, size(w, h), style, Styles.Metric.HEALTH, id, HealthWidget.class), w, h);
+    }
+
+    private void metric(LinearLayout col, String cap, Styles.Style style, Styles.Metric m, int id) {
+        cell(col, cap, WidgetRender.render(this, WidgetRender.Size.S, style, m, id, MetricWidget.class), 170, 170);
+    }
+
+    private WidgetRender.Size size(int w, int h) {
+        if (h >= 200) return WidgetRender.Size.L;
+        if (w >= 200) return WidgetRender.Size.M;
+        return WidgetRender.Size.S;
+    }
+
+    private void cell(LinearLayout col, String caption, RemoteViews rv, int wdp, int hdp) {
         TextView cap = new TextView(this);
         cap.setText(caption);
         cap.setTextColor(Color.parseColor("#9FB0C2"));
@@ -50,13 +68,12 @@ public class GalerieWidgetsActivity extends Activity {
         cap.setPadding(0, dp(14), 0, dp(6));
         col.addView(cap);
 
-        FrameLayout cell = new FrameLayout(this);
-        cell.setLayoutParams(new LinearLayout.LayoutParams(dp(wdp), dp(hdp)));
-        RemoteViews rv = WidgetRender.render(this, size, fakeId);
-        View v = rv.apply(this, cell);
-        cell.addView(v, new FrameLayout.LayoutParams(
+        FrameLayout frame = new FrameLayout(this);
+        frame.setLayoutParams(new LinearLayout.LayoutParams(dp(wdp), dp(hdp)));
+        View v = rv.apply(this, frame);
+        frame.addView(v, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER));
-        col.addView(cell);
+        col.addView(frame);
     }
 
     private int dp(int d) {

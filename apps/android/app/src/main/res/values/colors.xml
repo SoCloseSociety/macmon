@@ -23,4 +23,16 @@
          at 4.5:1 over any wallpaper. Kept for a future "art background" option. -->
     <color name="veil_top">#A60B0F14</color>
     <color name="veil_bottom">#D90B0F14</color>
+
+    <!-- Soft style (light card): warm off-white surface, dark text, soft line.
+         Measured AA: text on surface >= 14:1, text2 >= 6.5:1. -->
+    <color name="doux_surface">#F8F3E9</color>
+    <color name="doux_ligne">#E2D9CB</color>
+    <color name="doux_texte">#27221D</color>
+    <color name="doux_texte2">#5A524A</color>
+
+    <!-- Glass style: the dark ground at ~72% (wallpaper shows through), a light
+         hairline at 20%. Lunar text stays light and keeps AA over any wallpaper. -->
+    <color name="verre_fond">#B80B0F14</color>
+    <color name="verre_ligne">#33FFFFFF</color>
 </resources>

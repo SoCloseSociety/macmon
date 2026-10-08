@@ -12,10 +12,11 @@ import java.util.Date;
 import java.util.List;
 
 /**
- * Turns a {@link Snapshot} into the card the launcher draws, picking the S / M /
- * L layout from the widget's measured size. Every id it touches exists in all
- * three cards, so a call never references a missing view. Only RemoteViews calls
- * are used (no custom view): the launcher inflates it in its own process.
+ * Turns a {@link Snapshot} into the card the launcher draws: the right S / M / L
+ * layout for the measured size, the chosen style's colours applied to EVERY view
+ * (not just the background), and either the whole-device health or a single
+ * metric. Only RemoteViews calls are used, and every id it touches exists in all
+ * three cards, so a call never references a missing view.
  */
 public final class WidgetRender {
     private WidgetRender() {}
@@ -25,38 +26,62 @@ public final class WidgetRender {
     /** Visible so a debug gallery can render each size without a real widget id. */
     public enum Size { S, M, L }
 
-    public static RemoteViews build(Context ctx, AppWidgetManager mgr, int appWidgetId) {
-        return render(ctx, sizeOf(mgr, appWidgetId), appWidgetId);
+    public static RemoteViews buildHealth(Context ctx, AppWidgetManager mgr, int id) {
+        return render(ctx, sizeOf(mgr, id), Styles.style(ctx, id), Styles.Metric.HEALTH, id, HealthWidget.class);
     }
 
-    /** Build the card for an explicit size (the launcher path computes the size
-     *  from the widget options; the gallery passes it directly). */
-    public static RemoteViews render(Context ctx, Size size, int appWidgetId) {
+    public static RemoteViews buildMetric(Context ctx, AppWidgetManager mgr, int id) {
+        return render(ctx, sizeOf(mgr, id), Styles.style(ctx, id), Styles.metric(ctx, id), id, MetricWidget.class);
+    }
+
+    /** Build the card for explicit parameters (the gallery path; the launcher path
+     *  reads size + prefs first). */
+    public static RemoteViews render(Context ctx, Size size, Styles.Style style,
+                                     Styles.Metric metric, int appWidgetId, Class<?> provider) {
         int layout = size == Size.S ? R.layout.widget_card_s
                 : size == Size.L ? R.layout.widget_card_l : R.layout.widget_card_m;
         RemoteViews rv = new RemoteViews(ctx.getPackageName(), layout);
+        Styles.Palette pal = Styles.palette(ctx, style);
+        rv.setInt(R.id.wg_root, "setBackgroundResource", pal.bgRes);
 
         Snapshot snap = DeviceStats.read(ctx);
-        Health.Verdict v = Health.verdict(snap);
 
-        rv.setTextViewText(R.id.wg_title, "AEGISFORGE");
-        rv.setTextViewText(R.id.wg_value, String.valueOf(Health.score(snap)));
-        rv.setTextViewText(R.id.wg_sub, Health.subLabel(snap));
+        String title, value, sub;
+        Health.Level level;
+        boolean isHealth = metric == Styles.Metric.HEALTH;
+        if (isHealth) {
+            Health.Verdict v = Health.verdict(snap);
+            title = "AEGISFORGE";
+            value = String.valueOf(Health.score(snap));
+            sub = Health.subLabel(snap);
+            level = v == Health.Verdict.OK ? Health.Level.OK
+                    : v == Health.Verdict.WATCH ? Health.Level.WARN : Health.Level.BAD;
+        } else {
+            Metric m = metricView(snap, metric);
+            title = m.label; value = m.big; sub = m.detail; level = m.level;
+        }
 
-        // verdict pill: fill colour by verdict, a dark ink on it (measured AA)
-        rv.setTextViewText(R.id.wg_verdict, Health.verdictText(v));
+        rv.setTextViewText(R.id.wg_title, title);
+        rv.setTextColor(R.id.wg_title, pal.text2);
+        rv.setTextViewText(R.id.wg_value, value);
+        rv.setTextColor(R.id.wg_value, pal.text);
+        rv.setTextViewText(R.id.wg_sub, sub);
+        rv.setTextColor(R.id.wg_sub, pal.text2);
+
+        // verdict pill: solid level colour with a dark ink (reads on dark and light cards)
+        rv.setTextViewText(R.id.wg_verdict, pillText(level));
         int pill, ink;
-        switch (v) {
-            case OK:    pill = R.drawable.pill_ok;   ink = R.color.mint_ink;  break;
-            case WATCH: pill = R.drawable.pill_warn; ink = R.color.amber_ink; break;
-            default:    pill = R.drawable.pill_bad;  ink = R.color.alert_ink; break;
+        switch (level) {
+            case OK:   pill = R.drawable.pill_ok;   ink = R.color.mint_ink;  break;
+            case WARN: pill = R.drawable.pill_warn; ink = R.color.amber_ink; break;
+            default:   pill = R.drawable.pill_bad;  ink = R.color.alert_ink; break;
         }
         rv.setInt(R.id.wg_verdict, "setBackgroundResource", pill);
         rv.setTextColor(R.id.wg_verdict, ctx.getColor(ink));
 
-        // lines: battery / storage / memory / network, up to what the size holds
+        // lines: only the health overview carries them
         rv.removeAllViews(R.id.wg_lines);
-        int maxRows = size == Size.S ? 0 : size == Size.M ? 3 : 5;
+        int maxRows = (isHealth && size != Size.S) ? (size == Size.M ? 3 : 5) : 0;
         if (maxRows > 0) {
             List<Health.Dim> dims = Health.dimensions(snap);
             int n = Math.min(maxRows, dims.size());
@@ -64,23 +89,64 @@ public final class WidgetRender {
                 Health.Dim d = dims.get(i);
                 RemoteViews row = new RemoteViews(ctx.getPackageName(), R.layout.widget_row);
                 row.setTextViewText(R.id.row_label, d.label);
+                row.setTextColor(R.id.row_label, pal.text2);
                 row.setTextViewText(R.id.row_value, d.value);
-                row.setTextColor(R.id.row_value, ctx.getColor(levelColor(d.level)));
+                // on the light style, dim status colours fail contrast -> use the text colour
+                row.setTextColor(R.id.row_value, pal.light ? pal.text : ctx.getColor(levelColor(d.level)));
                 rv.addView(R.id.wg_lines, row);
             }
         }
 
         rv.setTextViewText(R.id.wg_footer,
                 "updated " + DateFormat.getTimeFormat(ctx).format(new Date(snap.takenAtMillis)));
+        rv.setTextColor(R.id.wg_footer, pal.text2);
 
-        // tap the card to refresh now
-        Intent intent = new Intent(ctx, HealthWidget.class);
-        intent.setAction(ACTION_REFRESH);
+        Intent intent = new Intent(ctx, provider).setAction(ACTION_REFRESH);
         intent.putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, new int[]{appWidgetId});
         PendingIntent pi = PendingIntent.getBroadcast(ctx, appWidgetId, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         rv.setOnClickPendingIntent(R.id.wg_root, pi);
         return rv;
+    }
+
+    /** One metric as a big value + detail + level (reuses the tested Health logic). */
+    static final class Metric {
+        final String label, big, detail;
+        final Health.Level level;
+        Metric(String label, String big, String detail, Health.Level level) {
+            this.label = label; this.big = big; this.detail = detail; this.level = level;
+        }
+    }
+
+    static Metric metricView(Snapshot s, Styles.Metric m) {
+        switch (m) {
+            case BATTERY:
+                return new Metric("BATTERY",
+                        s.batteryPct < 0 ? "n/a" : s.batteryPct + "%",
+                        s.batteryPct < 0 ? "" : (s.charging ? "charging" : "on battery"),
+                        Health.battery(s));
+            case STORAGE:
+                return new Metric("STORAGE",
+                        Health.humanBytes(s.storageFreeBytes),
+                        s.storageTotalBytes < 0 ? "" : Health.humanBytes(s.storageTotalBytes) + " total",
+                        Health.storage(s));
+            case MEMORY:
+                return new Metric("MEMORY",
+                        s.memAvailRatio() < 0 ? "n/a" : Health.pct(s.memAvailRatio()),
+                        s.memTotalBytes < 0 ? ""
+                                : "free, " + Health.humanBytes(s.memAvailBytes) + " of " + Health.humanBytes(s.memTotalBytes),
+                        Health.memory(s));
+            case NETWORK:
+                return new Metric("NETWORK", s.netType,
+                        "Offline".equals(s.netType) ? "no connection" : "connected",
+                        Health.network(s));
+            default:
+                return new Metric("AEGISFORGE", String.valueOf(Health.score(s)), Health.subLabel(s), Health.Level.OK);
+        }
+    }
+
+    private static String pillText(Health.Level l) {
+        return l == Health.Level.OK ? "OK" : l == Health.Level.WARN ? "WATCH" : "RISK";
     }
 
     private static int levelColor(Health.Level l) {
@@ -96,7 +162,7 @@ public final class WidgetRender {
             int h = opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0);
             if (h >= 200) return Size.L;
             if (w >= 200) return Size.M;
-            if (w == 0 && h == 0) return Size.M;   // no options yet: the initial layout
+            if (w == 0 && h == 0) return Size.M;
             return Size.S;
         } catch (Throwable ignored) {
             return Size.M;

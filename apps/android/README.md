@@ -16,10 +16,19 @@ the (private) Sentinel House repo is copied here.
 
 ## What it shows
 
-A card with a verdict pill (**OK / WATCH / RISK**), a 0--100 health score, the
-worst dimension in one line, and -- at medium/large sizes -- a line per dimension,
-with an `updated HH:MM` footer. Three sizes: small (2x2), medium (4x2), large (4x3+).
-Tap the card to refresh now.
+Two widgets, both in the Sentinel House look:
+
+- **Health** -- a card with a verdict pill (**OK / WATCH / RISK**), a 0--100 health
+  score, the worst dimension in one line, and -- at medium/large sizes -- a line per
+  dimension, with an `updated HH:MM` footer.
+- **Metric** -- one metric big: **battery**, **storage**, **memory** or **network**.
+
+Three sizes: small (2x2), medium (4x2), large (4x3+). Tap a card to refresh now.
+
+When you place a widget you pick a **style** -- **Lunar** (dark, the default),
+**Soft** (light), **Glass** (translucent over the wallpaper) -- and, for a metric
+widget, which metric. The style colours apply to every element, not just the
+background.
 
 ## Build
 

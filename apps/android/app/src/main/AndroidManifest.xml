@@ -23,6 +23,15 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".ChoixWidgetActivity"
+            android:exported="true"
+            android:theme="@style/Theme.AegisForge">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
         <receiver
             android:name=".HealthWidget"
             android:exported="false"
@@ -33,6 +42,18 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_health" />
+        </receiver>
+
+        <receiver
+            android:name=".MetricWidget"
+            android:exported="false"
+            android:label="@string/widget_metric_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_metric" />
         </receiver>
     </application>
 </manifest>

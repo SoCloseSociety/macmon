@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/ground"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:letterSpacing="0.06"
+            android:text="@string/cfg_title"
+            android:textAllCaps="true"
+            android:textColor="@color/text"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/cfg_style"
+            android:textColor="@color/text_2"
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <Button android:id="@+id/btn_lunar" style="@style/CfgChip" android:text="@string/cfg_lunar" />
+            <Button android:id="@+id/btn_soft" style="@style/CfgChip" android:text="@string/cfg_soft" />
+            <Button android:id="@+id/btn_glass" style="@style/CfgChip" android:text="@string/cfg_glass" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/metric_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/cfg_metric"
+            android:textColor="@color/text_2"
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:id="@+id/metric_row1"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <Button android:id="@+id/btn_battery" style="@style/CfgChip" android:text="@string/cfg_battery" />
+            <Button android:id="@+id/btn_storage" style="@style/CfgChip" android:text="@string/cfg_storage" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/metric_row2"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button android:id="@+id/btn_memory" style="@style/CfgChip" android:text="@string/cfg_memory" />
+            <Button android:id="@+id/btn_network" style="@style/CfgChip" android:text="@string/cfg_network" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btn_add"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:backgroundTint="@color/mint"
+            android:text="@string/cfg_add"
+            android:textColor="@color/mint_ink"
+            android:textStyle="bold" />
+    </LinearLayout>
+</ScrollView>

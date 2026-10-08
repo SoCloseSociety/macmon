@@ -1,17 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- AegisForge health widget. Resizable from 2x2 (small) up; the provider swaps
-     the card layout by size at runtime. previewImage fills the picker (an empty
-     previewLayout shows a black frame on some launchers). -->
+<!-- AegisForge single-metric widget. Natural at 2x2; the metric and style are
+     chosen on the config screen before it is added. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:minWidth="110dp"
     android:minHeight="110dp"
     android:targetCellWidth="2"
     android:targetCellHeight="2"
     android:updatePeriodMillis="1800000"
-    android:initialLayout="@layout/widget_card_m"
+    android:initialLayout="@layout/widget_card_s"
     android:previewImage="@drawable/widget_preview"
-    android:previewLayout="@layout/widget_card_m"
-    android:description="@string/widget_health_desc"
+    android:previewLayout="@layout/widget_card_s"
+    android:description="@string/widget_metric_desc"
     android:configure="co.soclose.aegisforge.ChoixWidgetActivity"
     android:resizeMode="horizontal|vertical"
     android:widgetCategory="home_screen" />
