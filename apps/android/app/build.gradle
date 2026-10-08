@@ -1,0 +1,69 @@
+plugins {
+    id "com.android.application"
+}
+
+// Single source of versions: ../version.properties (shared with build.sh).
+def verProps = new Properties()
+file("${rootDir}/version.properties").withInputStream { verProps.load(it) }
+def ver = { String key, String dflt -> verProps.getProperty(key, dflt).trim() }
+
+// One application, one module, no flavors. The APK carries ZERO third-party
+// runtime dependency: it stays tiny, builds offline once AGP is cached, and the
+// only code to audit is ours. Everything the widget shows is read on-device.
+android {
+    namespace "co.soclose.aegisforge"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "co.soclose.aegisforge"
+        minSdk 26
+        // 34: the fleet target. SizeF widget layouts (API 31+) are used when present.
+        targetSdk 34
+        versionCode Integer.parseInt(ver("VERSION_CODE", "1"))
+        versionName ver("VERSION_NAME", "0.0.0")
+        buildConfigField "String", "APK_PREFIX", '"aegisforge-"'
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+        release {
+            debuggable false
+            // minify OFF: the app is tiny and reached by reflection (manifest
+            // components). The shrinker would save nothing worth a broken widget.
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // No release keystore in git (a key in git is a secret in git). The
+            // release is signed with the local debug keystore (~/.android/debug.keystore),
+            // which is stable across releases so an installed phone can `install -r`
+            // without INSTALL_FAILED_UPDATE_INCOMPATIBLE. See README "Signing".
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+    }
+
+    // Off-device unit tests (app/src/test) call the real app classes. android.jar
+    // is a stub here: returnDefaultValues makes it return 0/null/false instead of
+    // throwing "not mocked", so the tests cover only OUR logic. Anything that truly
+    // needs Android is proven on the emulator.
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+}
+
+dependencies {
+    testImplementation "junit:junit:4.13.2"
+}

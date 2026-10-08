@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- A plain dark theme for the one activity. DeviceDefault keeps the APK free
+         of the AppCompat / Material dependency (zero third-party runtime deps). -->
+    <style name="Theme.AegisForge" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">@color/ground</item>
+        <item name="android:statusBarColor">@color/ground</item>
+        <item name="android:navigationBarColor">@color/ground</item>
+    </style>
+</resources>

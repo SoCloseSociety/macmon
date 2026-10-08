@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Veil over a future illustration background: ground 65% top to 85% bottom,
+     so text stays >= 4.5:1 over any wallpaper. Corners follow the card. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient android:angle="270" android:startColor="@color/veil_top" android:endColor="@color/veil_bottom" />
+    <corners android:radius="@dimen/wg_radius" />
+</shape>

@@ -1,0 +1,11 @@
+# Build outputs and machine-local files -- never in the repo.
+.gradle/
+build/
+app/build/
+local.properties
+# Signed APKs are produced locally and shared out-of-band, not committed to a
+# public repo (binaries bloat history; the signing key must stay off the repo).
+dist/
+*.apk
+*.keystore
+*.jks

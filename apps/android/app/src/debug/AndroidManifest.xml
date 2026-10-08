@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DEBUG overlay only: adds the launcher-free widget gallery used for
+     deterministic screenshots. Merged into the debug APK, never the release. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name=".GalerieWidgetsActivity"
+            android:exported="true"
+            android:label="AegisForge Gallery"
+            android:theme="@style/Theme.AegisForge" />
+    </application>
+</manifest>
