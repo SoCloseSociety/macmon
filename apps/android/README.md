@@ -1,0 +1,88 @@
+# AegisForge for Android
+
+A home-screen **widget** that shows this phone's own health -- battery, storage,
+memory, network and screen-lock state -- in the Sentinel House "Lunar" look. It is
+the mobile companion to the `macmon` / AegisForge system monitor.
+
+- **On-device only.** No account, no server, no network call, no tracking. Every
+  number is read from the phone itself. The one permission (`ACCESS_NETWORK_STATE`)
+  is "normal" and reports only the connection *type* (Wi-Fi / Cellular / ...).
+- **Honest.** An unknown metric shows `n/a` and is never scored as a failure.
+- **Zero third-party runtime dependencies.** The APK is a few hundred KB.
+
+The design is **re-implemented** from the Sentinel House widget kit's documented
+patterns (tokens, sizes, the RemoteViews allow-list, honest states). No code from
+the (private) Sentinel House repo is copied here.
+
+## What it shows
+
+A card with a verdict pill (**OK / WATCH / RISK**), a 0--100 health score, the
+worst dimension in one line, and -- at medium/large sizes -- a line per dimension,
+with an `updated HH:MM` footer. Three sizes: small (2x2), medium (4x2), large (4x3+).
+Tap the card to refresh now.
+
+## Build
+
+Toolchain (the fleet's proven recipe): **AGP 8.9.3**, **Gradle 8.11.1** (the wrapper
+fetches it), **JDK 17**, Android SDK with platform 35 + build-tools.
+
+```bash
+cd apps/android
+./build.sh
+# -> dist/aegisforge-<versionCode>.apk
+```
+
+`build.sh` picks a JDK 17 automatically (Android Studio's bundled JBR, or set
+`JAVA17=/path/to/jdk17`), writes a git-ignored `local.properties` pointing at your
+SDK (`ANDROID_HOME` overrides), runs the off-device unit tests, then assembles the
+release APK.
+
+Run just the logic tests: `./gradlew testReleaseUnitTest`.
+
+## Signing
+
+The release is signed with the **local debug keystore** (`~/.android/debug.keystore`).
+That keystore is:
+
+- **stable** across releases, so an already-installed phone can update with
+  `adb install -r` instead of hitting `INSTALL_FAILED_UPDATE_INCOMPATIBLE`;
+- **never committed** -- a keystore (or its password) in a public repo is a signing
+  key exposed for the life of the git history. It stays under `~/.android/`.
+
+AegisForge uses a **distinct application id** (`co.soclose.aegisforge`), so it never
+conflicts with the fleet's own Android apps regardless of their keystore. If you cut
+a real public release, create your own stable keystore outside the repo and point
+`signingConfigs` at it; keep using the same one for every later release.
+
+## Install on a phone (e.g. the Galaxy Fold)
+
+```bash
+adb install -r dist/aegisforge-<versionCode>.apk
+```
+
+Then long-press the home screen, choose **Widgets**, find **AegisForge**, and drop
+the size you want. (Installing on a personal device is the owner's own action.)
+
+## Layout
+
+```
+apps/android/
+  settings.gradle  build.gradle  gradle.properties  version.properties  build.sh
+  app/
+    build.gradle  proguard-rules.pro
+    src/main/
+      AndroidManifest.xml
+      java/co/soclose/aegisforge/
+        Snapshot.java      # plain data holder (no Android), unit-testable
+        Health.java        # scoring + verdict + formatting (pure logic)
+        DeviceStats.java   # on-device reads -> Snapshot
+        WidgetRender.java  # Snapshot -> RemoteViews, by size
+        HealthWidget.java  # AppWidgetProvider (update / resize / tap-refresh)
+        MainActivity.java  # info screen + live snapshot + refresh
+      res/ (layout, drawable, xml, values)
+    src/test/java/.../HealthTest.java   # off-device scoring tests
+```
+
+A portability guard in the Python suite (`tests/test_android_widget.py`) checks
+that every widget layout uses only RemoteViews-inflatable views and that the app
+carries no em dash.

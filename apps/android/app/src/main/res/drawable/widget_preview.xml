@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Picker preview: a miniature of the card (ground card, mint value, a line). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="180dp"
+    android:height="110dp"
+    android:viewportWidth="180"
+    android:viewportHeight="110">
+    <path android:fillColor="#151C25" android:pathData="M6,6 h168 a12,12 0 0 1 12,12 v74 a12,12 0 0 1 -12,12 h-168 a12,12 0 0 1 -12,-12 v-74 a12,12 0 0 1 12,-12 z" />
+    <path android:fillColor="#9FB0C2" android:pathData="M20,24 h60 v6 h-60 z" />
+    <path android:fillColor="#34E5A0" android:pathData="M128,20 h34 v14 h-34 z" />
+    <path android:fillColor="#EEF3F8" android:pathData="M20,44 h70 v18 h-70 z" />
+    <path android:fillColor="#263241" android:pathData="M20,76 h140 v4 h-140 z" />
+    <path android:fillColor="#263241" android:pathData="M20,86 h110 v4 h-110 z" />
+</vector>

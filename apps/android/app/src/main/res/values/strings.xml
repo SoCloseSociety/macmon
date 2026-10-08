@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AegisForge</string>
+    <string name="widget_health_label">AegisForge -- Health</string>
+    <string name="widget_health_desc">This phone\'s health at a glance: battery, storage, memory, network.</string>
+    <string name="main_title">AegisForge</string>
+    <string name="main_tag">device health, on your home screen</string>
+    <string name="main_body">AegisForge reads this phone\'s own health -- battery, storage, memory, network and screen-lock state -- and shows it in a home-screen widget, in the Sentinel House look.\n\nNothing leaves the device: there is no account, no network call, no tracking. The widget refreshes itself periodically and when you tap it.\n\nTo add it: long-press your home screen, choose Widgets, find AegisForge, and drop the size you want (small, medium or large).</string>
+    <string name="main_refresh">Refresh now</string>
+</resources>

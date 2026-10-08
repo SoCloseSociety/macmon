@@ -1,0 +1,4 @@
+// AegisForge Android -- root. AGP 8.9.3 needs Gradle 8.11.1 (wrapper) + JDK 17.
+plugins {
+    id "com.android.application" version "8.9.3" apply false
+}

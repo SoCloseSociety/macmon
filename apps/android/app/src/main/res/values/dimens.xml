@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="wg_radius">16dp</dimen>
+    <dimen name="wg_margin">12dp</dimen>
+    <dimen name="wg_margin_s">8dp</dimen>
+    <dimen name="pill_radius">999dp</dimen>
+</resources>
