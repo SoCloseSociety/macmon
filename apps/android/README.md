@@ -69,6 +69,8 @@ never an estimate. The delete/scan/shred logic is covered by off-device tests.
 
 - **Smart Cleaning** -- an opt-in background scan (JobScheduler) that notifies you
   when junk builds past a threshold. It only notifies; it never deletes on its own.
+- **Daily scan** -- an optional scan at a time you pick (AlarmManager), re-armed
+  after a reboot. Same notify-only behaviour.
 - **Apps & updates** -- installed apps sorted by size, with Store (opens the app's
   store page, where Update appears) and Uninstall (the system dialog). Android
   updates apps through the store, so the app never updates another app itself.

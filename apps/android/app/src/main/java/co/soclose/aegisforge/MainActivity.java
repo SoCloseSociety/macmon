@@ -1,6 +1,8 @@
 package co.soclose.aegisforge;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.app.TimePickerDialog;
 import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
@@ -43,11 +45,40 @@ public class MainActivity extends Activity {
             SmartClean.setEnabled(this, on);
         });
 
+        Button daily = findViewById(R.id.btn_daily);
+        updateDaily(daily);
+        daily.setOnClickListener(v -> chooseDaily(daily));
+
         // opened from the Smart Cleaning notification -> jump to the cleaner
         if (getIntent() != null && getIntent().getBooleanExtra("open_cleaner", false)) {
             startActivity(new Intent(this, CleanerActivity.class));
         }
         showSnapshot();
+    }
+
+    private void updateDaily(Button b) {
+        int h = SmartClean.dailyHour(this);
+        b.setText(h < 0 ? getString(R.string.daily_off)
+                : getString(R.string.daily_at, String.format(Locale.US, "%02d:00", h)));
+    }
+
+    private void chooseDaily(Button b) {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.daily_title)
+                .setItems(new CharSequence[]{getString(R.string.daily_set), getString(R.string.daily_turn_off)},
+                        (d, which) -> {
+                            if (which == 0) {
+                                int cur = SmartClean.dailyHour(this);
+                                new TimePickerDialog(this, (tp, hour, min) -> {
+                                    SmartClean.setDailyHour(this, hour);
+                                    updateDaily(b);
+                                }, cur < 0 ? 3 : cur, 0, true).show();
+                            } else {
+                                SmartClean.setDailyHour(this, -1);
+                                updateDaily(b);
+                            }
+                        })
+                .show();
     }
 
     private void showSnapshot() {

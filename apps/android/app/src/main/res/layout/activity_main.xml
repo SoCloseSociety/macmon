@@ -103,6 +103,14 @@
             android:textSize="11sp" />
 
         <Button
+            android:id="@+id/btn_daily"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="14dp"
+            android:backgroundTint="@color/surface"
+            android:textColor="@color/text" />
+
+        <Button
             android:id="@+id/main_refresh"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

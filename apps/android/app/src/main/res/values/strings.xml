@@ -41,6 +41,11 @@
     <!-- smart cleaning -->
     <string name="smart_label">Smart Cleaning: auto-scan + notify</string>
     <string name="smart_note">Scans in the background every so often and notifies you when junk builds up. It never deletes on its own, you always decide.</string>
+    <string name="daily_off">Daily scan: off</string>
+    <string name="daily_at">Daily scan: %1$s</string>
+    <string name="daily_title">Daily scan</string>
+    <string name="daily_set">Set a time</string>
+    <string name="daily_turn_off">Turn off</string>
 
     <!-- apps / updater -->
     <string name="apps_open">Apps &amp; updates</string>
