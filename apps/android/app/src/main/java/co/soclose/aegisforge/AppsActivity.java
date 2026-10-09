@@ -44,6 +44,20 @@ public class AppsActivity extends Activity {
 
         col.addView(title(getString(R.string.apps_title)));
         col.addView(tag(getString(R.string.apps_tag)));
+
+        Button upd = new Button(this);
+        upd.setText(getString(R.string.upd_open));
+        upd.setAllCaps(false);
+        upd.setBackgroundTintList(getColorStateList(R.color.mint));
+        upd.setTextColor(getColor(R.color.mint_ink));
+        upd.setTypeface(null, Typeface.BOLD);
+        LinearLayout.LayoutParams up = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
+        up.topMargin = dp(14);
+        upd.setLayoutParams(up);
+        upd.setOnClickListener(v -> startActivity(new Intent(this, UpdaterActivity.class)));
+        col.addView(upd);
+
         col.addView(note(getString(R.string.updater_note)));
 
         list = new LinearLayout(this);

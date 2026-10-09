@@ -22,6 +22,12 @@
     <!-- App manager lists installed apps. -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
+    <!-- Self-update ONLY: reach the public GitHub release over HTTPS (the one
+         network feature, used only on an explicit Check), and hand the signed APK
+         to the system installer (which still prompts the user). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher"
@@ -43,6 +49,12 @@
             android:name=".HealthCheckActivity"
             android:exported="false"
             android:label="@string/hc_title"
+            android:theme="@style/Theme.AegisForge" />
+
+        <activity
+            android:name=".UpdaterActivity"
+            android:exported="false"
+            android:label="@string/upd_title"
             android:theme="@style/Theme.AegisForge" />
 
         <activity

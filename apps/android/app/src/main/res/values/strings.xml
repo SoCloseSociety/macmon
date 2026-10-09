@@ -63,6 +63,19 @@
     <string name="btn_del_extras">Delete extras (keep one)</string>
     <string name="dupes_none">No duplicates found.</string>
 
+    <!-- self-update -->
+    <string name="upd_open">Update AegisForge</string>
+    <string name="upd_title">Update</string>
+    <string name="upd_check">Check for updates</string>
+    <string name="upd_checking">Checking...</string>
+    <string name="upd_uptodate">AegisForge is up to date.</string>
+    <string name="upd_install">Download and install</string>
+    <string name="upd_downloading">Downloading...</string>
+    <string name="upd_installing">Starting the installer...</string>
+    <string name="upd_failed">Could not reach the update server.</string>
+    <string name="upd_verify_failed">Download failed its integrity check. Nothing was installed.</string>
+    <string name="upd_note">This is the ONLY feature that uses the network, and only when you tap Check. Widgets and the cleaner work entirely offline. Updates come from the project\'s public GitHub release, over HTTPS, and are checked against a published SHA-256; Android also refuses any build not signed by AegisForge.</string>
+
     <!-- health check -->
     <string name="hc_open">Health Check</string>
     <string name="hc_title">Health Check</string>

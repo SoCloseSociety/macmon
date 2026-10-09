@@ -89,7 +89,7 @@ public final class DuplicateFinder {
         return groups;
     }
 
-    static String sha256(File f) {
+    public static String sha256(File f) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] buf = new byte[1 << 16];

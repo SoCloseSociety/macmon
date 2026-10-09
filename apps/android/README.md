@@ -76,6 +76,15 @@ never an estimate. The delete/scan/shred logic is covered by off-device tests.
   updates apps through the store, so the app never updates another app itself.
 - **Duplicates** -- finds identical files (size, then SHA-256), keeps one per group
   and frees the rest, with guarded deletes.
+- **Update AegisForge** -- the one feature that uses the network, and only on an
+  explicit tap: it reads `update/version.json` over HTTPS, and if a newer build
+  exists, downloads the APK from the project's public GitHub release, checks its
+  SHA-256, and hands it to the system installer. Widgets and the cleaner stay
+  fully offline. Android also refuses any build not signed by AegisForge.
+
+To cut a release: build (`./build.sh`), publish the APK as a GitHub release asset
+(`gh release create android-vX.Y.Z dist/aegisforge-N.apk`), then bump
+`update/version.json` (versionCode, versionName, apkUrl, sha256) and push it.
 
 ## Build
 

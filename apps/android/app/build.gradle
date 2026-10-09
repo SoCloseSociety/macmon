@@ -66,4 +66,9 @@ android {
 
 dependencies {
     testImplementation "junit:junit:4.13.2"
+    // Real org.json for off-device tests: android.jar ships only a stub (it returns
+    // null under returnDefaultValues), but the updater parses a JSON manifest, so
+    // the parser is proven on the JVM. testImplementation only -> never in the APK,
+    // which keeps Android's own org.json (same API).
+    testImplementation "org.json:json:20231013"
 }
