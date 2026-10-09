@@ -14,6 +14,14 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
 
+    <!-- Smart Cleaning posts a notification when junk builds up (13+ asks at
+         runtime), and reschedules its background scan after a reboot. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- App manager lists installed apps. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
     <application
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher"
@@ -36,6 +44,23 @@
             android:exported="false"
             android:label="@string/cleaner_title"
             android:theme="@style/Theme.AegisForge" />
+
+        <activity
+            android:name=".AppsActivity"
+            android:exported="false"
+            android:label="@string/apps_title"
+            android:theme="@style/Theme.AegisForge" />
+
+        <activity
+            android:name=".DuplicatesActivity"
+            android:exported="false"
+            android:label="@string/dupes_title"
+            android:theme="@style/Theme.AegisForge" />
+
+        <service
+            android:name=".SmartCleanJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
 
         <activity
             android:name=".ChoixWidgetActivity"

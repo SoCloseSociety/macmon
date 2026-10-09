@@ -57,10 +57,46 @@
             android:textStyle="bold" />
 
         <Button
+            android:id="@+id/btn_apps"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="10dp"
+            android:backgroundTint="@color/surface"
+            android:text="@string/apps_open"
+            android:textColor="@color/text" />
+
+        <Button
+            android:id="@+id/btn_dupes"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="10dp"
+            android:backgroundTint="@color/surface"
+            android:text="@string/dupes_open"
+            android:textColor="@color/text" />
+
+        <Switch
+            android:id="@+id/smart_switch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/smart_label"
+            android:textColor="@color/text"
+            android:textSize="14sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:lineSpacingMultiplier="1.25"
+            android:text="@string/smart_note"
+            android:textColor="@color/text_2"
+            android:textSize="11sp" />
+
+        <Button
             android:id="@+id/main_refresh"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="20dp"
             android:backgroundTint="@color/surface"
             android:text="@string/main_refresh"
             android:textColor="@color/mint" />

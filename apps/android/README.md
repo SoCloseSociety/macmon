@@ -51,6 +51,16 @@ The cleaner needs **All Files Access** to scan shared storage; the widgets need
 none. Nothing leaves the device. Every number reported is what was actually freed,
 never an estimate. The delete/scan/shred logic is covered by off-device tests.
 
+### Also
+
+- **Smart Cleaning** -- an opt-in background scan (JobScheduler) that notifies you
+  when junk builds past a threshold. It only notifies; it never deletes on its own.
+- **Apps & updates** -- installed apps sorted by size, with Store (opens the app's
+  store page, where Update appears) and Uninstall (the system dialog). Android
+  updates apps through the store, so the app never updates another app itself.
+- **Duplicates** -- finds identical files (size, then SHA-256), keeps one per group
+  and frees the rest, with guarded deletes.
+
 ## Build
 
 Toolchain (the fleet's proven recipe): **AGP 8.9.3**, **Gradle 8.11.1** (the wrapper

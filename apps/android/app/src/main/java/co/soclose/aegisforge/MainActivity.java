@@ -2,8 +2,10 @@ package co.soclose.aegisforge;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.os.Build;
 import android.os.Bundle;
 import android.widget.Button;
+import android.widget.Switch;
 import android.widget.TextView;
 
 import java.util.Locale;
@@ -23,6 +25,26 @@ public class MainActivity extends Activity {
         refresh.setOnClickListener(v -> { refreshWidgets(); showSnapshot(); });
         findViewById(R.id.btn_clean_open).setOnClickListener(
                 v -> startActivity(new Intent(this, CleanerActivity.class)));
+        findViewById(R.id.btn_apps).setOnClickListener(
+                v -> startActivity(new Intent(this, AppsActivity.class)));
+        findViewById(R.id.btn_dupes).setOnClickListener(
+                v -> startActivity(new Intent(this, DuplicatesActivity.class)));
+
+        Switch smart = findViewById(R.id.smart_switch);
+        smart.setChecked(SmartClean.isEnabled(this));
+        smart.setOnCheckedChangeListener((b, on) -> {
+            if (on && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                    && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 2);
+            }
+            SmartClean.setEnabled(this, on);
+        });
+
+        // opened from the Smart Cleaning notification -> jump to the cleaner
+        if (getIntent() != null && getIntent().getBooleanExtra("open_cleaner", false)) {
+            startActivity(new Intent(this, CleanerActivity.class));
+        }
         showSnapshot();
     }
 

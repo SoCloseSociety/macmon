@@ -37,4 +37,24 @@
     <string name="scanning">Scanning</string>
     <string name="nothing_found">No junk found. Storage is clean.</string>
     <string name="wipe_note">Overwrites free space so deleted files are harder to recover. On flash storage this raises the bar but is not a guarantee.</string>
+
+    <!-- smart cleaning -->
+    <string name="smart_label">Smart Cleaning: auto-scan + notify</string>
+    <string name="smart_note">Scans in the background every so often and notifies you when junk builds up. It never deletes on its own, you always decide.</string>
+
+    <!-- apps / updater -->
+    <string name="apps_open">Apps &amp; updates</string>
+    <string name="apps_title">Apps</string>
+    <string name="apps_tag">manage installed apps, sorted by size</string>
+    <string name="updater_note">Android updates apps through the store, so AegisForge cannot update another app itself. Tap Store to open an app\'s page, where Update shows if one is available.</string>
+    <string name="btn_store">Store</string>
+    <string name="btn_uninstall">Uninstall</string>
+
+    <!-- duplicates -->
+    <string name="dupes_open">Find duplicates</string>
+    <string name="dupes_title">Duplicates</string>
+    <string name="dupes_tag">identical files, keep one and free the rest</string>
+    <string name="btn_find_dupes">Scan for duplicates</string>
+    <string name="btn_del_extras">Delete extras (keep one)</string>
+    <string name="dupes_none">No duplicates found.</string>
 </resources>
