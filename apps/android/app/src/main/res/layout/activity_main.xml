@@ -47,14 +47,24 @@
             android:textSize="14sp" />
 
         <Button
+            android:id="@+id/btn_healthcheck"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="24dp"
+            android:backgroundTint="@color/mint"
+            android:text="@string/hc_open"
+            android:textColor="@color/mint_ink"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <Button
             android:id="@+id/btn_clean_open"
             android:layout_width="match_parent"
             android:layout_height="52dp"
-            android:layout_marginTop="24dp"
-            android:backgroundTint="@color/mint"
+            android:layout_marginTop="10dp"
+            android:backgroundTint="@color/surface"
             android:text="@string/clean_open"
-            android:textColor="@color/mint_ink"
-            android:textStyle="bold" />
+            android:textColor="@color/text" />
 
         <Button
             android:id="@+id/btn_apps"

@@ -23,6 +23,8 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
         Button refresh = findViewById(R.id.main_refresh);
         refresh.setOnClickListener(v -> { refreshWidgets(); showSnapshot(); });
+        findViewById(R.id.btn_healthcheck).setOnClickListener(
+                v -> startActivity(new Intent(this, HealthCheckActivity.class)));
         findViewById(R.id.btn_clean_open).setOnClickListener(
                 v -> startActivity(new Intent(this, CleanerActivity.class)));
         findViewById(R.id.btn_apps).setOnClickListener(

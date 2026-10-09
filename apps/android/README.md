@@ -30,6 +30,20 @@ When you place a widget you pick a **style** -- **Lunar** (dark, the default),
 widget, which metric. The style colours apply to every element, not just the
 background.
 
+## Health Check (the one-tap dashboard)
+
+The home screen leads with **Health Check**: one scan that folds everything into
+three CCleaner-style cards with an overall score.
+
+- **Space** -- how much junk is cleanable, with a Clean action.
+- **Speed** -- device memory / storage / battery pressure (informational; the OS
+  manages memory, so there is no fake "boost").
+- **Security** -- screen-lock posture, with a Fix action that opens the system
+  security settings.
+
+Each card shows an OK / WATCH / RISK verdict. Only categories Android actually lets
+an app assess are shown; there is no pretend "privacy scan".
+
 ## Cleaner (CCleaner-class, honest)
 
 Beyond the widgets, the app has a **Cleaner**: a one-tap funnel that scans shared

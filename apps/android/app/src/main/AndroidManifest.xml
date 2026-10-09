@@ -40,6 +40,12 @@
         </activity>
 
         <activity
+            android:name=".HealthCheckActivity"
+            android:exported="false"
+            android:label="@string/hc_title"
+            android:theme="@style/Theme.AegisForge" />
+
+        <activity
             android:name=".CleanerActivity"
             android:exported="false"
             android:label="@string/cleaner_title"

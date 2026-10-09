@@ -57,4 +57,12 @@
     <string name="btn_find_dupes">Scan for duplicates</string>
     <string name="btn_del_extras">Delete extras (keep one)</string>
     <string name="dupes_none">No duplicates found.</string>
+
+    <!-- health check -->
+    <string name="hc_open">Health Check</string>
+    <string name="hc_title">Health Check</string>
+    <string name="hc_tag">one scan: space, speed, security</string>
+    <string name="hc_scan">Run Health Check</string>
+    <string name="hc_clean">Clean</string>
+    <string name="hc_fix">Fix</string>
 </resources>
