@@ -1,10 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- The only permission, and it is "normal" (no runtime prompt): reading the
-         network type for the Network line. Everything else the widget shows
-         (battery, storage, memory, lock state) needs no permission at all. -->
+    <!-- The widget needs only this "normal" permission: the network type for the
+         Network line. Battery, storage, memory and lock state need none. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- The CLEANER needs file access to scan shared storage for junk. On
+         Android 11+ this is All Files Access (a special grant the user makes in
+         Settings); on older versions it is the legacy storage permission. It can
+         never reach another app's sandbox (Android/data, Android/obb): the OS
+         blocks that even with All Files Access. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
 
     <application
         android:allowBackup="true"
@@ -22,6 +30,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".CleanerActivity"
+            android:exported="false"
+            android:label="@string/cleaner_title"
+            android:theme="@style/Theme.AegisForge" />
 
         <activity
             android:name=".ChoixWidgetActivity"

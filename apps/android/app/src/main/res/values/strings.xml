@@ -24,4 +24,17 @@
     <string name="cfg_memory">Memory</string>
     <string name="cfg_network">Network</string>
     <string name="cfg_add">Add to home screen</string>
+
+    <!-- cleaner -->
+    <string name="clean_open">Clean storage</string>
+    <string name="cleaner_title">Cleaner</string>
+    <string name="cleaner_tag">find and remove junk files, on-device</string>
+    <string name="perm_needed">The cleaner needs All Files Access to scan shared storage for junk. It never reads another app\'s private data (Android blocks that), and nothing leaves the device.</string>
+    <string name="perm_grant">Grant All Files Access</string>
+    <string name="btn_analyze">Analyze</string>
+    <string name="btn_clean">Clean selected</string>
+    <string name="btn_wipe">Wipe free space</string>
+    <string name="scanning">Scanning</string>
+    <string name="nothing_found">No junk found. Storage is clean.</string>
+    <string name="wipe_note">Overwrites free space so deleted files are harder to recover. On flash storage this raises the bar but is not a guarantee.</string>
 </resources>

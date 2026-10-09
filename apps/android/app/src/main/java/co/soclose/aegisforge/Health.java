@@ -130,7 +130,10 @@ public final class Health {
         if (gb >= 10) return String.format(Locale.US, "%.0f GB", gb);
         if (gb >= 1) return String.format(Locale.US, "%.1f GB", gb);
         double mb = bytes / (1024.0 * 1024.0);
-        return String.format(Locale.US, "%.0f MB", mb);
+        if (mb >= 1) return String.format(Locale.US, "%.0f MB", mb);
+        double kb = bytes / 1024.0;
+        if (kb >= 1) return String.format(Locale.US, "%.0f KB", kb);
+        return bytes + " B";
     }
 
     public static String pct(double ratio) {

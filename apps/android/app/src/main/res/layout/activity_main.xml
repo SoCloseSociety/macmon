@@ -47,10 +47,20 @@
             android:textSize="14sp" />
 
         <Button
+            android:id="@+id/btn_clean_open"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:layout_marginTop="24dp"
+            android:backgroundTint="@color/mint"
+            android:text="@string/clean_open"
+            android:textColor="@color/mint_ink"
+            android:textStyle="bold" />
+
+        <Button
             android:id="@+id/main_refresh"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="12dp"
             android:backgroundTint="@color/surface"
             android:text="@string/main_refresh"
             android:textColor="@color/mint" />

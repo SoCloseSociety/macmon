@@ -30,6 +30,27 @@ When you place a widget you pick a **style** -- **Lunar** (dark, the default),
 widget, which metric. The style colours apply to every element, not just the
 background.
 
+## Cleaner (CCleaner-class, honest)
+
+Beyond the widgets, the app has a **Cleaner**: a one-tap funnel that scans shared
+storage for junk, groups it (temp & logs, thumbnail caches, leftover APKs, empty
+folders, crash logs) with real sizes, and removes what you select. It also wipes
+free space (overwrites it so deleted files are harder to recover).
+
+Honest about Android's limits (no root), the same walls CCleaner's own Android app
+hits:
+
+- It CANNOT clear another app's cache (the OS blocks that since Android 6), update
+  or uninstall other apps silently, or truly "free RAM". It never pretends to.
+- It CANNOT reach another app's sandbox (`Android/data`, `Android/obb`) -- the OS
+  blocks it, and the scanner refuses those paths anyway.
+- Secure-wipe on flash storage raises the bar but is not a guarantee (wear
+  levelling); the UI says so.
+
+The cleaner needs **All Files Access** to scan shared storage; the widgets need
+none. Nothing leaves the device. Every number reported is what was actually freed,
+never an estimate. The delete/scan/shred logic is covered by off-device tests.
+
 ## Build
 
 Toolchain (the fleet's proven recipe): **AGP 8.9.3**, **Gradle 8.11.1** (the wrapper
