@@ -1,6 +1,6 @@
 {
-  "versionCode": 8,
-  "versionName": "0.8.0",
-  "apkUrl": "https://github.com/SoCloseSociety/macmon/releases/download/android-v0.8.0/aegisforge-8.apk",
-  "sha256": "6d9f4edd0e03493240b95f8ac798dc9adde06ac2d053b26acfc6276dddbc1083"
+  "versionCode": 10,
+  "versionName": "0.9.0",
+  "apkUrl": "https://github.com/SoCloseSociety/macmon/releases/download/android-v0.9.0/aegisforge-9.apk",
+  "sha256": "af6c5fec95e9e5ce3f7fb5b513572abf0c8955ee6665fe60d63d28a8bcc5eeba"
 }
