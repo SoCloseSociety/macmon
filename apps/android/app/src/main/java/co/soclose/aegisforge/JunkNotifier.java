@@ -59,7 +59,7 @@ public final class JunkNotifier {
         PendingIntent pi = PendingIntent.getActivity(ctx, 0, open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Notification n = new Notification.Builder(ctx, CHANNEL)
-                .setSmallIcon(R.drawable.ic_launcher)
+                .setSmallIcon(R.drawable.ic_notif)
                 .setContentTitle("AegisForge: " + Health.humanBytes(bytes) + " of junk")
                 .setContentText(count + " cleanable items found. Tap to review and clean.")
                 .setAutoCancel(true)
