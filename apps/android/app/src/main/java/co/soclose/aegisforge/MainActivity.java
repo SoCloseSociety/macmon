@@ -4,11 +4,13 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.TimePickerDialog;
 import android.content.Intent;
+import android.content.pm.PackageInstaller;
 import android.os.Build;
 import android.os.Bundle;
 import android.widget.Button;
 import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.util.Locale;
 
@@ -53,7 +55,35 @@ public class MainActivity extends Activity {
         if (getIntent() != null && getIntent().getBooleanExtra("open_cleaner", false)) {
             startActivity(new Intent(this, CleanerActivity.class));
         }
+        handleInstallCallback(getIntent());
         showSnapshot();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleInstallCallback(intent);
+    }
+
+    /** The PackageInstaller session (self-update) calls back here. When the system
+     *  needs the user's confirmation it hands us an Intent to launch; on success or
+     *  failure it hands a status to report. */
+    private void handleInstallCallback(Intent intent) {
+        if (intent == null || !"co.soclose.aegisforge.INSTALL_RESULT".equals(intent.getAction())) return;
+        int status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, Integer.MIN_VALUE);
+        if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
+            if (confirm != null) {
+                confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(confirm);
+            }
+        } else if (status == PackageInstaller.STATUS_SUCCESS) {
+            Toast.makeText(this, "AegisForge updated", Toast.LENGTH_LONG).show();
+        } else if (status != Integer.MIN_VALUE) {
+            String msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
+            Toast.makeText(this, "Update not completed" + (msg != null ? ": " + msg : ""), Toast.LENGTH_LONG).show();
+        }
     }
 
     private void updateDaily(Button b) {
